@@ -44,8 +44,8 @@
         }
 
         #logo:hover { border-color: #a0a0a0; box-shadow: 0 0 20px rgba(160,160,160,0.1); }
-        .logo-center { transform: translateX(0) scale(1); }
-        .logo-side { transform: translateX(-35vw) scale(0.45); border-color: #444; }
+        .logo-center { transform: translateX(0) scale(1); will-change: transform; }
+        .logo-side { transform: translateX(-35vw) scale(0.45); border-color: #444; will-change:transform; }
 
         /* --- МЕНЮ --- */
         #menu {
