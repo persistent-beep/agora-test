@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>версия тестовая</title>
+    <link rel="stylesheet" href="style1.css">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" href="/icons/icon-192.png" type="image/png">
+    <link rel="preload" href="style1.css" as="style">
+    <link rel="preload" href="logo.png" as="image">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+</head>
+<body>
+
+    <div class="container">
+        <!-- Логотип -->
+        <div id="logo" class="logo-center" onclick="handleLogoClick()">
+            <!-- Замени logo.png на свою картинку -->
+            <img src="logo.png" alt="HUB" id="logo-img" loading="lazy" width="450" height="450">
+        </div>
+
+        <!-- Главное меню -->
+        <nav id="menu">
+            <div class="category" onclick="renderConnectModule()">CONNECT</div>
+            <div class="category" onclick="openModule('STREAM', 'Поток вещания активен...')">STREAM</div>
+            <div class="category" onclick="openModule('STORAGE', 'Доступ к файлам открыт...')">STORAGE</div>
+            <div class="category" onclick="openModule('SHOP', 'Приватный магазин...')">SHOP</div>
+            <div class="category" onclick="openModule('PLAY', 'Запуск игрового движка...')">PLAY</div>
+        </nav>
+
+        <!-- Область контента -->
+        <div id="content-area">
+            <h2 id="module-title">TITLE</h2>
+            <div id="module-content" style="width: 100%; height: 100%;"></div>
+        </div>
+    </div>
+    <script src="script1.js"></script>
+    <!-- Шаблон списка контактов -->
+<template id="template-contacts">
+    <div class="contact-list">
+        <div class="placeholder" style="margin-bottom: 20px;">SELECT TARGET:</div>
+        <div class="contact-item" onclick="initCallInterface('GHOST')">GHOST</div>
+        <div class="contact-item" onclick="initCallInterface('SARAH CONNOR')">SARAH CONNOR</div>
+        <div class="contact-item" onclick="initCallInterface('NEO')">NEO</div>
+        <div class="contact-item" onclick="initCallInterface('OPERATOR')">OPERATOR</div>
+    </div>
+</template>
+
+<!-- Шаблон интерфейса звонка -->
+<template id="template-call-ui">
+    <div class="call-interface">
+        <div class="call-header">
+            <div id="call-status" class="status-text blink">READY</div>
+            <div id="call-timer" class="call-timer">00:00</div>
+        </div>
+        <div class="waves-container">
+            <!-- див ответа -->
+                    <div class="wave-wrapper">
+                        <span class ="wave-label">INCOMING SIGNAL</span>
+                        <canvas id="remote-canvas"></canvas>
+                    </div>
+            <!---див звонка -->
+                    <div class="wave-wrapper">
+                        <span class="wave-label">TAP TO MUTE</span>
+                        <canvas id="mic-canvas" onclick="toggleMute()"></canvas>
+                    </div>
+        </div>
+        <div class="controls-row">
+            <button id="btn-action" class="btn-large btn-green" onclick="toggleCallAction()">CALL</button>
+                    <!---<button id="btn-source" class="btn-large btn-blue" onclick="toggleSource()">HEADPHONES</button>-->
+            <!-- 3D КУБ ДЛЯ ПЕРЕКЛЮЧЕНИЯ ИСТОЧНИКА -->
+            <div class="scene" onclick="toggleSource()">
+                <div class="cube" id="source-cube">
+                    <!-- Лицевая сторона (HEADPHONES) - Синяя фон, белый текст -->
+                    <div class="side front">
+                        HEADPHONES
+                    </div>
+                    <!-- Верхняя сторона (SPEAKERS) - Белый фон, синий текст -->
+                    <div class="side top">
+                        SPEAKERS
+                    </div>
+                </div>
+            </div>
+        </div>
+                <!--vosklet button-->
+        <div class="vosklet-container">
+                    <button id="btn-vosklet" class="btn-large btn-vosklet" onclick="activateVosklet()">VOSKLET</button>
+        </div>
+    </div>
+</template>
+</body>
+</html>
