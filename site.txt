@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <!--<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">-->
+    <title>версия тестовая</title>
+    <link rel="stylesheet" href="style1.css">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" href="/icons/icon-192.png" type="image/png">
+    <link rel="preload" href="style1.css" as="style">
+    <link rel="preload" href="logo.png" as="image">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+</head>
+<body>
+
+    <div class="container">
+        <!-- Логотип -->
+        <div id="logo" class="logo-center" onclick="handleLogoClick()">
+            <!-- Замени logo.png на свою картинку -->
+            <img src="logo.png" alt="HUB" id="logo-img" loading="lazy" width="450" height="450">
+        </div>
+
+        <!-- Главное меню -->
+        <nav id="menu">
+            <div class="category" onclick="renderConnectModule()">CONNECT</div>
+            <div class="category" onclick="openModule('STREAM', 'Поток вещания активен...')">STREAM</div>
+            <div class="category" onclick="openModule('STORAGE', 'Доступ к файлам открыт...')">STORAGE</div>
+            <div class="category" onclick="openModule('SHOP', 'Приватный магазин...')">SHOP</div>
+            <div class="category" onclick="openModule('PLAY', 'Запуск игрового движка...')">PLAY</div>
+        </nav>
+
+        <!-- Область контента -->
+        <div id="content-area">
+            <h2 id="module-title">TITLE</h2>
+            <div id="module-content" style="width: 100%; height: 100%;"></div>
+        </div>
+    </div>
+    <script src="script1.js"></script>
+    <!-- Шаблон списка контактов -->
+<template id="template-contacts">
+    <div class="contact-list">
+        <div class="placeholder" style="margin-bottom: 20px;">SELECT TARGET:</div>
+        <div class="contact-item" onclick="initCallInterface('GHOST')">GHOST</div>
+        <div class="contact-item" onclick="initCallInterface('SARAH CONNOR')">SARAH CONNOR</div>
+        <div class="contact-item" onclick="initCallInterface('NEO')">NEO</div>
+        <div class="contact-item" onclick="initCallInterface('OPERATOR')">OPERATOR</div>
+    </div>
+</template>
+
+<!-- Шаблон интерфейса звонка -->
+<template id="template-call-ui">
+    <div class="call-interface">
+        <div class="call-header">
+            <div id="call-status" class="status-text blink">READY</div>
+            <div id="call-timer" class="call-timer">00:00</div>
+        </div>
+        <div class="waves-container">
+            <!-- див ответа -->
+                    <div class="wave-wrapper">
+                        <span class ="wave-label">INCOMING SIGNAL</span>
+                        <canvas id="remote-canvas"></canvas>
+                    </div>
+            <!---див звонка -->
+                    <div class="wave-wrapper">
+                        <span class="wave-label">TAP TO MUTE</span>
+                        <canvas id="mic-canvas" onclick="toggleMute()"></canvas>
+                    </div>
+        </div>
+        <div class="controls-row">
+            <button id="btn-action" class="btn-large btn-green" onclick="toggleCallAction()">CALL</button>
+                    <!---<button id="btn-source" class="btn-large btn-blue" onclick="toggleSource()">HEADPHONES</button>-->
+            <!-- 3D КУБ ДЛЯ ПЕРЕКЛЮЧЕНИЯ ИСТОЧНИКА -->
+            <div class="scene" onclick="toggleSource()">
+                <div class="cube" id="source-cube">
+                    <!-- Лицевая сторона (HEADPHONES) - Синяя фон, белый текст -->
+                    <div class="side front">
+                        HEADPHONES
+                    </div>
+                    <!-- Верхняя сторона (SPEAKERS) - Белый фон, синий текст -->
+                    <div class="side top">
+                        SPEAKERS
+                    </div>
+                </div>
+            </div>
+        </div>
+                <!--vosklet button-->
+        <div class="vosklet-container">
+                    <button id="btn-vosklet" class="btn-large btn-vosklet" onclick="activateVosklet()">VOSKLET</button>
+        </div>
+    </div>
+</template>
+</body>
+</html>
+--end of index--
+        body, html {
+            margin: 0;
+            padding: 0;
+            background-color: #0a0a0a;
+            color: #a0a0a0;
+            font-family: 'Inter', -apple-system, sans-serif;
+            overflow: hidden;
+            height: 100%;
+        }
+
+        .container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            position: relative;
+        }
+
+        /* --- ЛОГОТИП --- */
+        #logo {
+            width: 450px;
+            height: 450px;
+            border: 2px solid #333;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.7s cubic-bezier(0.19, 1, 0.22, 1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            background: #0a0a0a;
+            user-select: none;
+            overflow: hidden;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scale(1.7);
+            display: block;
+            pointer-events: none;
+        }
+
+        #logo:hover { border-color: #a0a0a0; box-shadow: 0 0 20px rgba(160,160,160,0.1); }
+        .logo-center { transform: translateX(0) scale(1); will-change: transform; }
+        .logo-side { transform: translateX(-35vw) scale(0.45); border-color: #444; will-change:transform; }
+
+        /* --- МЕНЮ --- */
+        #menu {
+            position: absolute;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-50px);
+            transition: all 0.6s ease;
+            pointer-events: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .menu-visible {
+            opacity: 1 !important;
+            visibility: visible !important;
+            transform: translateY(0) !important;
+            pointer-events: all !important;
+        }
+
+        .category {
+            font-size: 4.5rem;
+            color: #333;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.4s;
+            display: block;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .category:hover {
+            color: #a0a0a0;
+            transform: scale(1.05);
+            padding-left: 10px;
+        }
+
+        /* --- КОНТЕНТНАЯ ОБЛАСТЬ --- */
+        #content-area {
+            position: absolute;
+            width: 60vw;
+            height: 70vh;
+            left: 30vw;
+            opacity: 0;
+            visibility: hidden;
+            transform: scale(0.9);
+            transition: all 0.6s cubic-bezier(0.19, 1, 0.22, 1);
+            border-left: 1px solid #222;
+            padding: 40px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content-visible {
+            opacity: 1 !important;
+            visibility: visible !important;
+            transform: scale(1) !important;
+        }
+
+        h2 { 
+            font-size: 3.5rem;
+            font-weight: 200;
+            letter-spacing: 8px;
+            color: #fff;
+            margin: 0 0 20px 0;
+        }
+        
+        .placeholder { color: #444; margin-top: 20px; line-height: 1.6; }
+
+        /* --- UI ЗВОНКА (НОВОЕ) --- */
+        .contact-list {
+            width: 100%;
+            max-width: 600px; /* Ограничиваем ширину, чтобы список был аккуратным */
+            display: flex;
+            flex-direction: column;
+            gap: 20px;        /* Увеличиваем отступ между кнопками */
+            text-align: left; /* Центрируем текст внутри элементов */
+        }
+        .contact-item {
+            font-size: 2.2rem;
+            padding: 20px;
+            border: 1px solid #222;
+            cursor: pointer;
+            transition: 0.3s;
+
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .contact-item:hover { 
+            background: #111;
+            color: #fff; 
+            border-color: #444; }
+
+        /* Сетка интерфейса звонка */
+        .call-interface {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+            align-self: flex-start;
+            justify-content: space-between;
+        }
+
+        /* Верхняя строка: Статус и Таймер */
+        .call-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            border-bottom: 1px solid #222;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+
+        .status-text {
+            font-size: 2rem;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            color: #fff;
+        }
+
+        .blink { animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0.3; } }
+
+        .call-timer {
+            font-size: 2rem;
+            font-family: monospace;
+            color: #666;
+        }
+
+        /* Спектрограммы */
+        .waves-container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .wave-label {
+            position: absolute;
+            font-size: 0.8rem;
+            color: #444;
+            margin-left: 5px;
+            pointer-events: none;
+        }
+
+        canvas {
+            width: 100%;
+            height: 120px;
+            background: #0e0e0e;
+            border: 1px solid #222;
+            cursor: default;
+        }
+
+        /* Нижний канвас (микрофон) кликабельный */
+        #mic-canvas { cursor: pointer; transition: border-color 0.3s; }
+        #mic-canvas:hover { border-color: #555; }
+        .muted-border { border-color: #550000 !important; opacity: 0.5; }
+
+        /* Кнопки управления */
+        .controls-row {
+            display: flex;
+            gap: 20px;
+            height: 80px;
+            align-items:stretch;
+        }
+
+        .btn-large {
+            flex: 1;
+            border: none;
+            font-size: 1.2rem;
+            font-weight: 600;
+            letter-spacing: 2px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            font-family: 'Inter', sans-serif;
+            color: #000; /* Контрастный текст на цветных кнопках */
+
+            /* --- ИСПРАВЛЕНИЯ ДЛЯ РАЗМЕРА --- */
+    height: 100%;           /* Растягиваем на всю высоту контейнера */
+    box-sizing: border-box; /* Включаем отступы в расчет ширины */
+    padding: 0;             /* Убираем стандартные отступы браузера */
+    margin: 0;
+    display: flex;          /* Flex для центровки текста */
+    justify-content: center;
+    align-items: center;
+            /* ----------------------------- */
+
+        }
+
+        /* Цвета кнопок */
+        .btn-green { background-color: #2b9348; color: #fff; }
+        .btn-green:hover { background-color: #3bb55d; box-shadow: 0 0 15px rgba(43, 147, 72, 0.4); }
+
+        .btn-red { background-color: #bc2d2d; color: #fff; }
+        .btn-red:hover { background-color: #d93838; box-shadow: 0 0 15px rgba(188, 45, 45, 0.4); }
+
+        .btn-blue { background-color: #2d5cb8; color: #fff; }
+        .btn-blue:hover { background-color: #3a6ed6; box-shadow: 0 0 15px rgba(45, 92, 184, 0.4); }
+
+        .wave-wrapper{
+            position: relative;
+            margin-bottom: 10px;
+        }
+        .wave-label{
+            position: absolute;
+            top: 0;
+            left: 5px;
+            font-size: 0.8rem;
+            color: #444;
+            pointer-events: none;
+        }
+
+        /*--- animation button of sound source  ---*/
+        /* --- АНИМАЦИЯ ПЕРЕВОРОТА (СПИН) --- */
+        @keyframes flipVertical {
+            0% { transform: rotateX(0deg); }
+            100% { transform: rotateX(270deg); }
+        }
+
+        .source-btn-anim {
+            animation: flipVertical 0.9s ease-in-out;
+        }
+
+        /* --- СТИЛИ ДЛЯ КНОПКИ VOSKLET --- */
+        .vosklet-container {
+            margin-top: 20px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+        }
+
+        .btn-vosklet {
+            width: 100%; /* Широкая кнопка */
+            height:80px;
+            background-color: #d35400; /* Оранжевый/Ржавый цвет */
+            color: #fff;
+            font-size: 1.2rem;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            font-family: 'Inter', sans-serif;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-vosklet:hover {
+            background-color: #e67e22;
+            box-shadow: 0 0 15px rgba(211, 84, 0, 0.4);
+        }
+                /* --- СТИЛИ 3D КУБА --- */
+        .scene {
+            flex: 1; /* Занимает оставшееся место рядом с кнопкой CALL */
+            height: 100%; /* Высота как у других кнопок */
+            perspective: 600px; /* Глубина 3D эффекта */
+            cursor: pointer;
+            /* Сбрасываем стили кнопки, так как это теперь div */
+            background: none;
+            border: none;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+            box-sizing: border-box;
+            overflow:hidden;
+        }
+
+        .cube {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transform-origin: 100% 50%; /* Точка вращения по правому краю (как в примере) */
+            transition: transform 0.85s cubic-bezier(.17,.67,.14,.93);
+            /* Добавляем тень контейнеру для объема */
+            /* box-shadow: 0 10px 20px rgba(0,0,0,0.3); */
+        }
+
+        /* Класс, который добавляется через JS для переворота */
+        .cube.is-flipped {
+            transform: rotateX(-90deg);
+        }
+
+        .side {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1.2rem;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            /* Внутренняя тень для стиля "пластика" */
+            box-shadow: inset 0 0 0 2px rgba(0,0,0,0.1); 
+            user-select: none;
+        }
+
+        /* --- ЛИЦЕВАЯ СТОРОНА (HEADPHONES) --- */
+        .front {
+            /* Синяя кнопка с белыми буквами */
+            background-color: #2d5cb8;
+            color: #fff;
+            /* Сдвигаем вперед на половину высоты (40px), чтобы создать толщину */
+            transform: translate3d(0, 0, 40px); 
+        }
+
+        /* --- ВЕРХНЯЯ СТОРОНА (SPEAKERS) --- */
+        .top {
+            /* Белая кнопка с синими буквами */
+            background-color: #ffffff;
+            color: #2d5cb8;
+            /* Поворачиваем и поднимаем, чтобы она была "снизу" передней грани */
+            transform: rotateX(90deg) translate3d(0, 0, 40px);
+        }
+        #module-content {
+            display: flex;
+            justify-content: center; /* Центрирование по горизонтали */
+            align-items: center;     /* Центрирование по вертикали */
+            flex: 1;                 /* Растягиваем на всю оставшуюся высоту */
+        }
+--end of css---
+	 let currentState = 'HOME';
+        
+        // Переменные для звонка
+        let callTimerInterval;
+        let animationFrameId;
+        let isCalling = false;
+        let isMuted = false;
+        let currentSource = 'HEADPHONES'; // или 'SPEAKERS'
+        let seconds = 0;
+
+        const logo = document.getElementById('logo');
+        const menu = document.getElementById('menu');
+        const contentArea = document.getElementById('content-area');
+        const moduleTitle = document.getElementById('module-title');
+        const moduleContent = document.getElementById('module-content');
+
+        // --- ЛОГИКА НАВИГАЦИИ ---
+
+        function handleLogoClick() {
+            if (currentState === 'HOME') {
+                toMenu();
+            }else if (currentState === 'MENU'){
+                 toHome();
+            } else {
+                // Из любого места возвращаемся в меню
+                stopCallSimulation(); // Остановить звонок если он идет
+                toMenu();
+            }
+        }
+
+        function toMenu() {
+            currentState = 'MENU';
+            logo.className = 'logo-side';
+            menu.classList.add('menu-visible');
+            contentArea.classList.remove('content-visible');
+        }
+
+        function toHome() {
+            currentState = 'HOME';
+            logo.className = 'logo-center';
+            menu.classList.remove('menu-visible');
+            contentArea.classList.remove('content-visible');
+        }
+
+        // --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ПРОСТЫХ МОДУЛЕЙ ---
+        function openModule(title, text) {
+            currentState = 'CONTENT';
+            menu.classList.remove('menu-visible');
+            moduleTitle.innerText = title;
+            moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
+            
+            setTimeout(() => {
+                contentArea.classList.add('content-visible');
+            }, 300);
+        }
+
+        // --- ЛОГИКА МОДУЛЯ CONNECT ---
+
+        // 1. Показать список контактов
+        function renderConnectModule() {
+            currentState = 'CONTENT';
+            menu.classList.remove('menu-visible');
+            moduleTitle.innerText = 'CONNECT';
+            
+            //clone template
+            const template = document.getElementById('template-contacts');
+            //its set up
+            moduleContent.innerHTML = template.innerHTML;
+            
+            setTimeout(() => {
+                contentArea.classList.add('content-visible');
+            }, 300);
+        }
+
+        // 2. Инициализация интерфейса звонка
+
+        let callTemplateCache = null;
+
+        function initCallInterface(name) {
+
+            moduleTitle.innerText = name; // Имя контакта в заголовок
+             
+            if (!callTemplateCache){
+            // находим шаблон для ui
+                const template = document.getElementById('template-call-ui');
+                callTemplateCache = template.innerHTML;
+             }
+            // Шаблон интерфейса copied
+            moduleContent.innerHTML = callTemplateCache;
+            // сброс состояний анимаций
+            isCalling = false;
+            isMuted = false;
+            seconds = 0;
+            updateCanvasDimensions();
+            //start animations
+            startWaveAnimation();
+        }
+
+        // --- ЛОГИКА ЗВОНКА И ИНТЕРАКТИВА ---
+
+        function toggleCallAction() {
+            const btn = document.getElementById('btn-action');
+            const statusEl = document.getElementById('call-status');
+
+            if (!isCalling) {
+                // НАЧАТЬ ЗВОНОК
+                isCalling = true;
+                btn.innerText = "END CALL";
+                btn.className = "btn-large btn-red";
+                statusEl.innerText = "CALLING...";
+                
+                // Имитация соединения через 1.5 сек
+                setTimeout(() => {
+                    if(isCalling) {
+                        statusEl.innerText = "CONNECTED";
+                        statusEl.style.color = "#4aff4a"; // Светло-зеленый текст
+                        startTimer();
+                    }
+                }, 1500);
+
+            } else {
+                // ЗАВЕРШИТЬ ЗВОНОК
+                endCall();
+                // Возврат к списку контактов через секунду
+                setTimeout(renderConnectModule, 1000);
+            }
+        }
+
+        function endCall() {
+            isCalling = false;
+            stopTimer();
+            const btn = document.getElementById('btn-action');
+            const statusEl = document.getElementById('call-status');
+            
+            btn.innerText = "CALL";
+            btn.className = "btn-large btn-green";
+            statusEl.innerText = "ENDED";
+            statusEl.style.color = "#ff4a4a";
+            statusEl.classList.remove('blink');
+        }
+
+        function toggleMute() {
+            if (!isCalling) return; // Нельзя мутить если не звоним (опционально)
+
+            isMuted = !isMuted;
+            const micCanvas = document.getElementById('mic-canvas');
+            const statusEl = document.getElementById('call-status');
+
+            if (isMuted) {
+                micCanvas.classList.add('muted-border');
+                statusEl.innerText = "MUTED";
+                statusEl.style.color = "yellow";
+            } else {
+                micCanvas.classList.remove('muted-border');
+                statusEl.innerText = "CONNECTED";
+                statusEl.style.color = "#4aff4a";
+            }
+        }
+        // flip animation for sound source
+        function toggleSource() {
+            const cube = document.getElementById('source-cube');
+            
+            // Переключаем класс переворота
+            cube.classList.toggle('is-flipped');
+
+            // Обновляем логическую переменную
+            if (currentSource === 'HEADPHONES') {
+                currentSource = 'SPEAKERS';
+                // Текст не меняем, он прописан в HTML самой грани куба
+            } else {
+                currentSource = 'HEADPHONES';
+            }
+        }
+
+        // --- ТАЙМЕР ---
+        function startTimer() {
+            stopTimer();
+            seconds = 0;
+            const timerEl = document.getElementById('call-timer');
+            callTimerInterval = setInterval(() => {
+                seconds++;
+                const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+                const secs = (seconds % 60).toString().padStart(2, '0');
+                timerEl.innerText = `${mins}:${secs}`;
+            }, 1000);
+        }
+
+        function stopTimer() {
+            clearInterval(callTimerInterval);
+        }
+
+        // --- ВИЗУАЛИЗАЦИЯ (CANVAS) ---
+        function updateCanvasDimensions() {
+            const c1 = document.getElementById('remote-canvas');
+            const c2 = document.getElementById('mic-canvas');
+            if(c1 && c2) {
+                c1.width = c1.offsetWidth;
+                c1.height = c1.offsetHeight;
+                c2.width = c2.offsetWidth;
+                c2.height = c2.offsetHeight;
+            }
+        }
+
+        function stopCallSimulation() {
+            isCalling = false;
+            stopTimer();
+            cancelAnimationFrame(animationFrameId);
+        }
+
+        function startWaveAnimation() {
+            const ctxRemote = document.getElementById('remote-canvas').getContext('2d');
+            const ctxMic = document.getElementById('mic-canvas').getContext('2d');
+            
+            // Функция рисования волны
+            function draw(ctx, color, active, isMutedState) {
+                const w = ctx.canvas.width;
+                const h = ctx.canvas.height;
+                ctx.clearRect(0, 0, w, h);
+                
+                // Настройки
+                ctx.fillStyle = color;
+                const bars = 50;
+                const barWidth = w / bars;
+
+                for (let i = 0; i < bars; i++) {
+                    let barHeight;
+                    
+                    if (active && !isMutedState) {
+                        // Случайная высота для эффекта голоса
+                        // Если статус CONNECTED - высота большая, если нет - маленькая "шум"
+                        const multiplier = document.getElementById('call-status').innerText === 'CONNECTED' ? 0.8 : 0.1;
+                        barHeight = Math.random() * h * multiplier;
+                    } else {
+                        // Тишина (полоска по центру)
+                        barHeight = 2; 
+                    }
+
+                    const x = i * barWidth;
+                    const y = (h - barHeight) / 2;
+                    
+                    ctx.fillRect(x, y, barWidth - 2, barHeight);
+                }
+            }
+
+            function loop() {
+                // Цвет входящего (верхний) - #a0a0a0 или активный
+                draw(ctxRemote, '#a0a0a0', isCalling, false);
+                
+                // Цвет исходящего (нижний) - зависит от Mute
+                const micColor = isMuted ? '#552222' : '#a0a0a0';
+                draw(ctxMic, micColor, isCalling, isMuted);
+
+                animationFrameId = requestAnimationFrame(loop);
+            }
+            loop();
+        }
+
+            // Следим за ресайзом окна для канваса
+
+            function debounce(func, delay) {
+                let timeout;
+                return (...args) => {
+                    clearTimeout(timeout);
+                    timeout = setTimeout(() => func.apply(this, args), delay);
+                };
+            }
+
+            window.addEventListener('resize', debounce(updateCanvasDimensions, 100));
+
+            // Регистрация Service Worker для PWA
+            if ('serviceWorker' in navigator) {
+              window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                  .then((registration) => {
+                    console.log('[SW] Зарегистрирован:', registration.scope);
+                  })
+                  .catch((error) => {
+                    console.error('[SW] Ошибка регистрации:', error);
+                  });
+              });
+            }
+
+            // Проверка поддержки PWA и предложение установки
+            let deferredPrompt;
+
+            window.addEventListener('beforeinstallprompt', (e) => {
+              e.preventDefault();
+              deferredPrompt = e;
+              // Можно показать кнопку "Установить приложение"
+              // showInstallPromotion();
+            });
+
+            // Отслеживание установки
+            window.addEventListener('appinstalled', () => {
+              console.log('[PWA] Приложение установлено');
+              deferredPrompt = null;
+            });
+--end of script --
+{
+  "name": "AGORA HUB",
+  "short_name": "AGORA",
+  "description": "Децентрализованный хаб для связи и обмена",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#2b9348",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "communication"],
+  "lang": "ru"
+}
+--end of manifest
+self.addEventListener('fetch', (event) => {
+  // Игнорируем не-GET запросы
+  if (event.request.method !== 'GET') return;
+
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      // 1. Если есть в кэше — отдаем сразу (самый быстрый путь)
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
+      // 2. Если нет в кэше, идем в сеть
+      return fetch(event.request).then((networkResponse) => {
+        // Если это логотип или иконка, сохраняем в кэш на лету
+        const isImage = event.request.url.includes('logo.png') || event.request.url.includes('icon-');
+        
+        if (isImage && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return networkResponse;
+      }).catch(() => {
+        // 3. Фолбэк, если сети нет и в кэше пусто
+        if (event.request.url.includes('.png')) {
+          return caches.match('/logo.png');
+        }
+      });
+    })
+  );
+});
+-- end of sw --
