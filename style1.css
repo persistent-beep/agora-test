@@ -70,12 +70,13 @@
 
         .category {
             font-size: 4.5rem;
-            color: #333;
+            color: #d1d1d1;
             text-decoration: none;
             cursor: pointer;
             transition: all 0.4s;
             display: block;
             -webkit-tap-highlight-color: transparent;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
         }
 
         .category:hover {
@@ -188,13 +189,6 @@
             position: relative;
         }
 
-        .wave-label {
-            position: absolute;
-            font-size: 0.8rem;
-            color: #444;
-            margin-left: 5px;
-            pointer-events: none;
-        }
 
         canvas {
             width: 100%;
@@ -255,13 +249,16 @@
             position: relative;
             margin-bottom: 10px;
         }
-        .wave-label{
+        .wave-label {
             position: absolute;
-            top: 0;
-            left: 5px;
+            top: 5px;
+            left: 8px;
             font-size: 0.8rem;
             color: #444;
+            letter-spacing: 1px;
             pointer-events: none;
+            text-transform: uppercase;
+            z-index: 10;
         }
 
         /*--- animation button of sound source  ---*/
