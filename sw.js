@@ -1,4 +1,23 @@
 const CACHE_NAME = 'agora-hub-v1'; // Или любая другая строка
+const ASSETS =
+  [
+    './',
+    './index.html',
+    './script1.js',
+    './style1.css',
+    './logo.png',
+    './manifest.json'
+  ];
+
+// 1. При установке кэшируем основные файлы (App Shell)
+self.addEventListener('install', (event) => {
+    event.waitUntil(
+        caches.open(CACHE_NAME).then((cache) => {
+            return cache.addAll(ASSETS);
+        })
+    );
+});
+
 self.addEventListener('fetch', (event) => {
   // Игнорируем не-GET запросы
   if (event.request.method !== 'GET') return;
@@ -12,22 +31,15 @@ self.addEventListener('fetch', (event) => {
 
       // 2. Если нет в кэше, идем в сеть
       return fetch(event.request).then((networkResponse) => {
-        // Если это логотип или иконка, сохраняем в кэш на лету
-        const isImage = event.request.url.includes('logo.png') || event.request.url.includes('icon-');
-        
-        if (isImage && networkResponse.status === 200) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
-        }
-        return networkResponse;
-      }).catch(() => {
-        // 3. Фолбэк, если сети нет и в кэше пусто
-        if (event.request.url.includes('.png')) {
-          return caches.match('/logo.png');
-        }
-      });
-    })
-  );
+// Кэшируем новые ресурсы на лету (например, иконки)
+                if (networkResponse.status === 200) {
+                    const responseToCache = networkResponse.clone();
+                    caches.open(CACHE_NAME).then((cache) => {
+                        cache.put(event.request, responseToCache);
+                    });
+                }
+                return networkResponse;
+            });
+        })
+    );
 });
