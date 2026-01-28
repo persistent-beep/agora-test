@@ -1,3 +1,4 @@
+const CACHE_NAME = 'agora-hub-v1'; // Или любая другая строка
 self.addEventListener('fetch', (event) => {
   // Игнорируем не-GET запросы
   if (event.request.method !== 'GET') return;
