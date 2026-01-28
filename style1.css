@@ -265,15 +265,6 @@
         }
 
         /*--- animation button of sound source  ---*/
-        /* --- АНИМАЦИЯ ПЕРЕВОРОТА (СПИН) --- */
-        @keyframes flipVertical {
-            0% { transform: rotateX(0deg); }
-            100% { transform: rotateX(270deg); }
-        }
-
-        .source-btn-anim {
-            animation: flipVertical 0.9s ease-in-out;
-        }
 
         /* --- СТИЛИ ДЛЯ КНОПКИ VOSKLET --- */
         .vosklet-container {
