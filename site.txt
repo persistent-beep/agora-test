@@ -104,7 +104,12 @@
     </div>
 </template>
 <!--logout interface-->
-
+<template id="template-logout">
+    <div class="logout-section">
+        <div class="placeholder" style="margin-bottom: 30px;">ЗАПУСК ИГРОВОГО ДВИЖКА...</div>
+        <button class="btn-large btn-red" onclick="handleLogout()" style="width: 100%; max-width: 450px;">TERMINATE SESSION (LOGOUT)</button>
+    </div>
+</template>
 </body>
 </html>
 from fastapi import FastAPI, HTTPException
@@ -135,7 +140,7 @@ async def login(data: AuthRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 {
   "name": "AGORA HUB",
   "short_name": "AGORA",
@@ -229,7 +234,7 @@ function renderAuthModule() {
 function updateAuthBtn() {
     const input = document.getElementById("auth-token");
     const btn = document.getElementById("btn-auth-submit");
-    if (input.value.lenght > 0) {
+    if (input.value.length > 0) {
         btn.innerText = "SUBMIT";
     } else {
         btn.innerText = "GUEST";
@@ -274,11 +279,8 @@ function openModule(title, text) {
     moduleTitle.innerText = title;
 
     if (title === "PLAY") {
-        moduleContent.innerHTML = `
-            <div class="logout-section">
-                <div class="placeholder" style="margin-bottom: 30px;">${text}</div>
-                <button class="btn-large btn-red" onclick="handleLogout()" style="width: 100%; max-width: 400px;">TERMINATE SESSION (LOGOUT)</button>
-            </div>`;
+        const template = document.getElementById("template-logout");
+        moduleContent.innerHTML = template.innerHTML;
     } else {
         moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
     }
@@ -944,49 +946,73 @@ self.addEventListener("appinstalled", () => {
 
 #auth-token {
     width: 100%;
-    background: #0e0e0e; [cite: 54]
-    border: 1px solid #222; [cite: 31]
-    color: #fff; [cite: 34]
+    background: #0e0e0e; 
+    border: 1px solid #222; 
+    color: #fff; 
     font-size: 1.5rem;
     padding: 20px;
     text-align: center;
     outline: none;
-    box-sizing: border-box; [cite: 62]
+    box-sizing: border-box; 
 }
 
 #btn-auth-submit {
     width: 100%;
     height: 80px; /* Высота как у VOSKLET  */
     margin-top: 10px;
-    box-sizing: border-box; [cite: 62]
+    font-size: 1.2rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-sizing: border-box; 
 }
 
 
 
 
-const CACHE_NAME = 'agora-hub-v2'; // Или любая другая строка
-const ASSETS =
-  [
-    './',
-    './index.html',
-    './script1.js',
-    './style1.css',
-    './logo.png',
-    './manifest.json'
-  ];
+const CACHE_NAME = "agora-hub-v3"; // Или любая другая строка
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./script1.js",
+  "./style1.css",
+  "./logo.png",
+  "./manifest.json",
+];
 
 // 1. При установке кэшируем основные файлы (App Shell)
-self.addEventListener('install', (event) => {
-    event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll(ASSETS);
-        })
-    );
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll(ASSETS);
+    }),
+  );
+  self.skipWaiting();
+});
+// удаление старых кешей
+self.addEventListener("activate", (event) => {
+  const cacheWhitelist = [CACHE_NAME];
+
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          // Если имя кеша не совпадает с текущим (например, agora-hub-v2), удаляем его
+          if (cacheWhitelist.indexOf(cacheName) === -1) {
+            console.log("[SW] Удаляем старый кеш:", cacheName);
+            return caches.delete(cacheName);
+          }
+        }),
+      );
+    }),
+  );
+  // Немедленно контролировать все открытые страницы
+  return self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
+self.addEventListener("fetch", (event) => {
   // Игнорируем не-GET запросы
-  if (event.request.method !== 'GET') return;
+  if (event.request.method !== "GET") return;
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
@@ -995,17 +1021,24 @@ self.addEventListener('fetch', (event) => {
         return cachedResponse;
       }
 
-      // 2. Если нет в кэше, идем в сеть
+      // 2. Если нет в кеше, идем в сеть
       return fetch(event.request).then((networkResponse) => {
-// Кэшируем новые ресурсы на лету (например, иконки)
-                if (networkResponse.status === 200) {
-                    const responseToCache = networkResponse.clone();
-                    caches.open(CACHE_NAME).then((cache) => {
-                        cache.put(event.request, responseToCache);
-                    });
-                }
-                return networkResponse;
-            });
-        })
-    );
+        // Кэшируем новые ресурсы на лету
+        // Проверяем, что ответ валидный
+        if (
+          !networkResponse || networkResponse.status !== 200 ||
+          networkResponse.type !== "basic"
+        ) {
+          return networkResponse;
+        }
+
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
+        });
+
+        return networkResponse;
+      });
+    }),
+  );
 });

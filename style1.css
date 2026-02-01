@@ -406,21 +406,25 @@
 
 #auth-token {
     width: 100%;
-    background: #0e0e0e; [cite: 54]
-    border: 1px solid #222; [cite: 31]
-    color: #fff; [cite: 34]
+    background: #0e0e0e; 
+    border: 1px solid #222; 
+    color: #fff; 
     font-size: 1.5rem;
     padding: 20px;
     text-align: center;
     outline: none;
-    box-sizing: border-box; [cite: 62]
+    box-sizing: border-box; 
 }
 
 #btn-auth-submit {
     width: 100%;
     height: 80px; /* Высота как у VOSKLET  */
     margin-top: 10px;
-    box-sizing: border-box; [cite: 62]
+    font-size: 1.2rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-sizing: border-box; 
 }
 
 

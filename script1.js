@@ -65,7 +65,7 @@ function renderAuthModule() {
 function updateAuthBtn() {
     const input = document.getElementById("auth-token");
     const btn = document.getElementById("btn-auth-submit");
-    if (input.value.lenght > 0) {
+    if (input.value.length > 0) {
         btn.innerText = "SUBMIT";
     } else {
         btn.innerText = "GUEST";
@@ -110,11 +110,8 @@ function openModule(title, text) {
     moduleTitle.innerText = title;
 
     if (title === "PLAY") {
-        moduleContent.innerHTML = `
-            <div class="logout-section">
-                <div class="placeholder" style="margin-bottom: 30px;">${text}</div>
-                <button class="btn-large btn-red" onclick="handleLogout()" style="width: 100%; max-width: 400px;">TERMINATE SESSION (LOGOUT)</button>
-            </div>`;
+        const template = document.getElementById("template-logout");
+        moduleContent.innerHTML = template.innerHTML;
     } else {
         moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
     }
