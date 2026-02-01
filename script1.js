@@ -73,16 +73,35 @@ function updateAuthBtn() {
 }
 
 // Заглушка для отправки (пока без Python)
-function handleAuthSubmit() {
+async function handleAuthSubmit() {
     const input = document.getElementById("auth-token");
-    if (input.value === "") {
-        console.log("Entering as Guest...");
-        localStorage.setItem("agora_token", "guest_session");
-    } else {
-        console.log("Authenticatin with token", input.value);
+    const btn = document.getElementById("btn-auth-submit");
+    const tokenValue = input.value || "guest"; // если пусто - заходим как гость
+
+    try {
+        const response = await fetch(
+            "http://127.0.0.1:8000/auth/login",
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: tokenValue }),
+            },
+        );
+
+        if (response.ok) {
+            const data = await response.json();
+            localStorage.setItem("agora_token", data.access_token);
+            toMenu();
+        } else {
+            input.style.borderColor = "#ff4a4a";
+            input.value = "";
+            input.placeholder = "ACCESS_DENIED";
+        }
+    } catch (error) {
+        console.error("server_offline", error);
+        input.placeholder = "SERVER_OFFLINE";
     }
-    toMenu();
-}
+} // end of handle auth
 
 // --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ПРОСТЫХ МОДУЛЕЙ ---
 function openModule(title, text) {
