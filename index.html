@@ -93,5 +93,13 @@
         </div>
     </div>
 </template>
+<!-- шаблон интерфейса логин-->
+<template id="template-auth">
+    <div class="auth-container">
+        <div class="auth-header">AUTHORIZATION</div>
+        <input type="password" id="auth-token" placeholder="ENTER ACCESS TOKEN" oninput="updateAuthBtn()">
+        <button id="btn-auth-submit" class="btn-large btn-blue" onclick="handleAuthSubmit()">GUEST</button>
+    </div>
+</template>
 </body>
 </html>

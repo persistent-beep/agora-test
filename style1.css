@@ -361,3 +361,43 @@
             align-items: center;     /* Центрирование по вертикали */
             flex: 1;                 /* Растягиваем на всю оставшуюся высоту */
         }
+
+        /* стили login page */
+        
+        .auth-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .auth-header {
+            font-size: 2.5rem;
+            letter-spacing: 10px;
+            color: #fff;
+            text-transform: uppercase;
+        }
+
+        #auth-token {
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid #333;
+            color: #fff;
+            font-size: 1.5rem;
+            padding: 10px;
+            text-align: center;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        #auth-token:focus {
+            border-color: #2d5cb8;
+        }
+
+
+
+
+
