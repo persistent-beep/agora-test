@@ -108,11 +108,25 @@ function openModule(title, text) {
     currentState = "CONTENT";
     menu.classList.remove("menu-visible");
     moduleTitle.innerText = title;
-    moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
 
+    if (title === "PLAY") {
+        moduleContent.innerHTML = `
+            <div class="logout-section">
+                <div class="placeholder" style="margin-bottom: 30px;">${text}</div>
+                <button class="btn-large btn-red" onclick="handleLogout()" style="width: 100%; max-width: 400px;">TERMINATE SESSION (LOGOUT)</button>
+            </div>`;
+    } else {
+        moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
+    }
     setTimeout(() => {
         contentArea.classList.add("content-visible");
     }, 300);
+}
+//функция логаут
+
+function handleLogout() {
+    localStorage.removeItem("agora_token");
+    location.reload();
 }
 
 // --- ЛОГИКА МОДУЛЯ CONNECT ---
