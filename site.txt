@@ -112,61 +112,6 @@
 </template>
 </body>
 </html>
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-app = FastAPI()
-
-# Разрешаем корс 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins = ['*'],
-    allow_methods = ['*'],
-    allow_headers = ['*'],
-)
-
-class AuthRequest(BaseModel):
-    token: str
-
-@app.post("/auth/login")
-async def login(data: AuthRequest):
-    if data.token == "GHOST_ROOT":
-        return {"status": "succes", "access_token": "secret-jwt-payload", "role": "admin"}
-    elif data.token == "guest":
-        return {"status": "succes", "access_token": "guest-session", "role": "guest"}
-    else:
-        raise HTTPException(status_code=401, detail="UNVALID_TOKEN")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-{
-  "name": "AGORA HUB",
-  "short_name": "AGORA",
-  "description": "Децентрализованный хаб для связи и обмена",
-  "start_url": "./",
-  "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#0a0a0a",
-  "orientation": "portrait-primary",
-  "icons": [
-    {
-      "src": "./icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "./icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ],
-  "categories": ["productivity", "communication"],
-  "lang": "ru"
-}
 let currentState = "HOME";
 
 // Переменные для звонка
@@ -195,14 +140,22 @@ function handleLogoClick() {
         }
     } else if (currentState === "MENU") {
         toHome();
+    } else if (currentState === "AUTH") {
+        toHome();
     } else {
         // Из любого места возвращаемся в меню
         stopCallSimulation(); // Остановить звонок если он идет
-        toMenu();
+        if (token) toMenu();
+        else toHome();
     }
 }
 
 function toMenu() {
+    if (!localStorage.getItem("agora_token")) {
+        toHome();
+        return;
+    }
+
     currentState = "MENU";
     logo.className = "logo-side";
     menu.classList.add("menu-visible");
@@ -776,7 +729,7 @@ self.addEventListener("appinstalled", () => {
         }
 
         /* Цвета кнопок */
-        .btn-green { background-color: #2b9348; color: #fff; }
+        .btn-green { background-color: #2b9348; color: #fff; heigth: 80px; }
         .btn-green:hover { background-color: #3bb55d; box-shadow: 0 0 15px rgba(43, 147, 72, 0.4); }
 
         .btn-red { background-color: #bc2d2d; color: #fff; }
@@ -902,75 +855,77 @@ self.addEventListener("appinstalled", () => {
             flex: 1;                 /* Растягиваем на всю оставшуюся высоту */
         }
 
-        /* стили login page */
-        
-        .auth-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 30px;
-            width: 100%;
-            max-width: 400px;
-        }
+/* --- СТИЛИ СТРАНИЦЫ АВТОРИЗАЦИИ (LOGIN) --- */
 
-        .auth-header {
-            font-size: 2.5rem;
-            letter-spacing: 10px;
-            color: #fff;
-            text-transform: uppercase;
-        }
+.auth-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    width: 100%;
+}
 
-        #auth-token {
-            width: 100%;
-            background: transparent;
-            border: none;
-            border-bottom: 2px solid #333;
-            color: #fff;
-            font-size: 1.5rem;
-            padding: 10px;
-            text-align: center;
-            outline: none;
-            transition: border-color 0.3s;
-        }
+.auth-header {
+    font-size: 2.5rem;
+    letter-spacing: 10px;
+    color: #fff;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+}
 
-        #auth-token:focus {
-            border-color: #2d5cb8;
-        }
-        /* стиль для аутентификации*/
 .auth-form-group {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-width: 450px; /* Совпадает с размером логотипа  */
+    max-width: 450px; /* Размер как у логотипа */
+    box-sizing: border-box;
 }
 
 #auth-token {
     width: 100%;
-    background: #0e0e0e; 
-    border: 1px solid #222; 
-    color: #fff; 
+    height: 80px; /* Делаем инпут высоким и массивным */
+    background: #0e0e0e;
+    border: 1px solid #222;
+    color: #fff;
     font-size: 1.5rem;
-    padding: 20px;
+    padding: 0 20px;
     text-align: center;
     outline: none;
-    box-sizing: border-box; 
+    box-sizing: border-box;
+    transition: border-color 0.3s;
+}
+
+#auth-token:focus {
+    border-color: #2d5cb8; /* Подсветка при клике */
 }
 
 #btn-auth-submit {
     width: 100%;
-    height: 80px; /* Высота как у VOSKLET  */
+    height: 80px;
     margin-top: 10px;
     font-size: 1.2rem;
     font-weight: 600;
     text-transform: uppercase;
     cursor: pointer;
-    box-sizing: border-box; 
+    box-sizing: border-box;
+    /* Исправления: */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #2d5cb8;  /* Цвет из .btn-blue */
+    color: #fff;
+    border: none;
+    letter-spacing: 2px;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.2s;
+    flex: none;
 }
 
-
-
-
-const CACHE_NAME = "agora-hub-v3"; // Или любая другая строка
+#btn-auth-submit:hover {
+    background-color: #3a6ed6;
+    box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
+}
+const CACHE_NAME = "agora-hub-v4"; // Или любая другая строка
 const ASSETS = [
   "./",
   "./index.html",
@@ -1042,3 +997,29 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+{
+  "name": "AGORA HUB",
+  "short_name": "AGORA",
+  "description": "Децентрализованный хаб для связи и обмена",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "communication"],
+  "lang": "ru"
+}

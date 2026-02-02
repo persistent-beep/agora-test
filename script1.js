@@ -26,14 +26,22 @@ function handleLogoClick() {
         }
     } else if (currentState === "MENU") {
         toHome();
+    } else if (currentState === "AUTH") {
+        toHome();
     } else {
         // Из любого места возвращаемся в меню
         stopCallSimulation(); // Остановить звонок если он идет
-        toMenu();
+        if (token) toMenu();
+        else toHome();
     }
 }
 
 function toMenu() {
+    if (!localStorage.getItem("agora_token")) {
+        toHome();
+        return;
+    }
+
     currentState = "MENU";
     logo.className = "logo-side";
     menu.classList.add("menu-visible");

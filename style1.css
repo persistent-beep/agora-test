@@ -195,7 +195,6 @@
             height: 120px;
             background: #0e0e0e;
             border: 1px solid #222;
-            cursor: default;
         }
 
         /* Нижний канвас (микрофон) кликабельный */
@@ -236,7 +235,7 @@
         }
 
         /* Цвета кнопок */
-        .btn-green { background-color: #2b9348; color: #fff; heigth: 80px; }
+        .btn-green { background-color: #2b9348; color: #fff; }
         .btn-green:hover { background-color: #3bb55d; box-shadow: 0 0 15px rgba(43, 147, 72, 0.4); }
 
         .btn-red { background-color: #bc2d2d; color: #fff; }
@@ -407,7 +406,6 @@
 }
 
 #btn-auth-submit {
-    width: 100%;
     height: 80px;
     margin-top: 10px;
     font-size: 1.2rem;

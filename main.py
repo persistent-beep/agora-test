@@ -17,7 +17,7 @@ class AuthRequest(BaseModel):
 
 @app.post("/auth/login")
 async def login(data: AuthRequest):
-    if data.token == "GHOST_ROOT":
+    if data.token == "ghost":
         return {"status": "succes", "access_token": "secret-jwt-payload", "role": "admin"}
     elif data.token == "guest":
         return {"status": "succes", "access_token": "guest-session", "role": "guest"}
