@@ -236,7 +236,7 @@
         }
 
         /* Цвета кнопок */
-        .btn-green { background-color: #2b9348; color: #fff; }
+        .btn-green { background-color: #2b9348; color: #fff; heigth: 80px; }
         .btn-green:hover { background-color: #3bb55d; box-shadow: 0 0 15px rgba(43, 147, 72, 0.4); }
 
         .btn-red { background-color: #bc2d2d; color: #fff; }
@@ -408,20 +408,24 @@
 
 #btn-auth-submit {
     width: 100%;
-    height: 80px; /* Высота как у VOSKLET и инпута */
-    margin-top: 15px;
-    background-color: #2d5cb8;
-    color: #fff;
-    border: none;
+    height: 80px;
+    margin-top: 10px;
     font-size: 1.2rem;
     font-weight: 600;
     text-transform: uppercase;
     cursor: pointer;
     box-sizing: border-box;
-    transition: all 0.2s;
+    /* Исправления: */
     display: flex;
     justify-content: center;
     align-items: center;
+    background-color: #2d5cb8;  /* Цвет из .btn-blue */
+    color: #fff;
+    border: none;
+    letter-spacing: 2px;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.2s;
+    flex: none;
 }
 
 #btn-auth-submit:hover {
