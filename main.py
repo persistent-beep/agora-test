@@ -21,23 +21,23 @@ USERS = {
             "role": "ghost",
             "display_name": "GHOST"
         },
-        "sarah connor": {
-            "access_token": "jwt-sarah-002", 
+        "sarah": {
+            "access_token": "sarah connor", 
             "role": "sarah connor",
             "display_name": "SARAH CONNOR"
         },
         "neo": {
-            "access_token": "jwt-neo-003",
+            "access_token": "neo",
             "role": "neo",
             "display_name": "NEO"
         },
         "operator": {
-            "access_token": "jwt-operator-004",
+            "access_token": "operator",
             "role": "operator",
             "display_name": "OPERATOR"
         },
         "guest": {
-            "access_token": "guest-session",
+            "access_token": "guest",
             "role": "guest",
             "display_name": "GUEST"
         }
