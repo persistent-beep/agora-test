@@ -88,7 +88,7 @@ async function handleAuthSubmit() {
 
     try {
         const response = await fetch(
-            "http://192.168.1.151:8000/auth/login",
+            "http://127.0.0.1:8000/auth/login",
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -99,6 +99,7 @@ async function handleAuthSubmit() {
         if (response.ok) {
             const data = await response.json();
             localStorage.setItem("agora_token", data.access_token);
+            localStorage.setItem("agora_role", data.role);
             toMenu();
         } else {
             input.style.borderColor = "#ff4a4a";
@@ -131,12 +132,35 @@ function openModule(title, text) {
 
 function handleLogout() {
     localStorage.removeItem("agora_token");
+    localStorage.removeItem("agora_role");
     location.reload();
 }
 
 // --- ЛОГИКА МОДУЛЯ CONNECT ---
 
 // 1. Показать список контактов
+// === КОНФИГУРАЦИЯ КОНТАКТОВ ПО РОЛЯМ ===
+const CONTACTS_MAP = {
+    "guest": ["GHOST", "SARAH CONNOR", "NEO", "OPERATOR"], // GHOST видит всех (кроме себя)
+    "ghost": ["SARAH CONNOR", "NEO", "OPERATOR"], // алиас для admin
+    "sarah connor": ["GHOST"], // алиас
+    "neo": ["GHOST", "OPERATOR"], // NEO видит GHOST и OPERATOR
+    "operator": ["GHOST", "NEO"],
+};
+
+// Получение текущей роли из localStorage
+function getCurrentRole() {
+    // Сначала проверяем роль из данных авторизации
+    const savedRole = localStorage.getItem("agora_role");
+    if (savedRole) return savedRole.toLowerCase();
+
+    // Fallback: парсим из токена (если старая сессия)
+    const token = localStorage.getItem("agora_token");
+    if (token === "secret-jwt-payload") return "ghost";
+    if (token === "guest-session") return "guest";
+
+    return null;
+}
 function renderConnectModule() {
     currentState = "CONTENT";
     menu.classList.remove("menu-visible");
@@ -144,8 +168,31 @@ function renderConnectModule() {
 
     //clone template
     const template = document.getElementById("template-contacts");
+    const clone = template.content.cloneNode(true);
+    const listContainer = clone.getElementById("dynamic-contact-list");
+
+    // получаем контакты для текущей роли
+    const role = getCurrentRole();
+    const contacts = CONTACTS_MAP[role] || [];
+
+    if (contacts.length === 0) {
+        const noAccess = document.createElement("div");
+        noAccess.className = "placeholder";
+        noAccess.style.color = "#444";
+        noAccess.textContent = "NO TARGETS";
+        listContainer.appendChild(noAccess);
+    } else {
+        contacts.forEach((contactName) => {
+            const btn = document.createElement("div");
+            btn.className = "contact-item";
+            btn.textContent = contactName;
+            btn.onclick = () => initCallInterface(contactName);
+            listContainer.appendChild(btn);
+        });
+    }
     //its set up
-    moduleContent.innerHTML = template.innerHTML;
+    moduleContent.innerHTML = "";
+    moduleContent.appendChild(clone);
 
     setTimeout(() => {
         contentArea.classList.add("content-visible");

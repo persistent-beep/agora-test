@@ -43,12 +43,9 @@
     <script src="script1.js"></script>
     <!-- Шаблон списка контактов -->
 <template id="template-contacts">
-    <div class="contact-list">
+<div class="contact-list" id="dynamic-contact-list">
         <div class="placeholder" style="margin-bottom: 20px;">SELECT TARGET:</div>
-        <div class="contact-item" onclick="initCallInterface('GHOST')">GHOST</div>
-        <div class="contact-item" onclick="initCallInterface('SARAH CONNOR')">SARAH CONNOR</div>
-        <div class="contact-item" onclick="initCallInterface('NEO')">NEO</div>
-        <div class="contact-item" onclick="initCallInterface('OPERATOR')">OPERATOR</div>
+        <!-- Контакты добавляются JS -->
     </div>
 </template>
 

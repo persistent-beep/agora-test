@@ -15,14 +15,49 @@ app.add_middleware(
 class AuthRequest(BaseModel):
     token: str
 
+USERS = {
+        "ghost": {
+            "access_token": "ghost",
+            "role": "ghost",
+            "display_name": "GHOST"
+        },
+        "sarah connor": {
+            "access_token": "jwt-sarah-002", 
+            "role": "sarah connor",
+            "display_name": "SARAH CONNOR"
+        },
+        "neo": {
+            "access_token": "jwt-neo-003",
+            "role": "neo",
+            "display_name": "NEO"
+        },
+        "operator": {
+            "access_token": "jwt-operator-004",
+            "role": "operator",
+            "display_name": "OPERATOR"
+        },
+        "guest": {
+            "access_token": "guest-session",
+            "role": "guest",
+            "display_name": "GUEST"
+        }
+    }
+
 @app.post("/auth/login")
 async def login(data: AuthRequest):
-    if data.token == "ghost":
-        return {"status": "succes", "access_token": "secret-jwt-payload", "role": "admin"}
-    elif data.token == "guest":
-        return {"status": "succes", "access_token": "guest-session", "role": "guest"}
-    else:
-        raise HTTPException(status_code=401, detail="UNVALID_TOKEN")
+    token = data.token.lower().strip()
+    
+    user = USERS.get(token)
+        
+    if not user:
+        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
+            
+    return {
+        "status": "success",
+        "access_token": user["access_token"],
+        "role": user["role"],
+        "display_name": user["display_name"]
+    }
 
 if __name__ == "__main__":
     import uvicorn
