@@ -88,7 +88,7 @@ async function handleAuthSubmit() {
 
     try {
         const response = await fetch(
-            "http://127.0.0.1:8000/auth/login",
+            "http://192.168.1.151:8000/auth/login",
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
