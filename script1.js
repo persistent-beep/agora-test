@@ -1,3 +1,5 @@
+//import { stringify } from "node:querystring";
+
 let currentState = "HOME";
 
 // Переменные для звонка
@@ -17,7 +19,7 @@ const moduleContent = document.getElementById("module-content");
 // --- ЛОГИКА НАВИГАЦИИ --- ЛОГИКА ПОВЕДЕНИЯ ЛОГОТИПА ---
 
 function handleLogoClick() {
-    const token = localStorage.getItem("agora_token");
+    const token = localStorage.getItem("agora_session");
 
     if (currentState === "HOME") {
         if (token) toMenu();
@@ -98,8 +100,11 @@ async function handleAuthSubmit() {
 
         if (response.ok) {
             const data = await response.json();
-            localStorage.setItem("agora_token", data.access_token);
-            localStorage.setItem("agora_role", data.role);
+            const session = {
+                token: data.token,
+                role: data.role,
+            };
+            localStorage.setItem("agora_session", JSON.stringify(session));
             toMenu();
         } else {
             input.style.borderColor = "#ff4a4a";
@@ -151,16 +156,17 @@ const CONTACTS_MAP = {
 // Получение текущей роли из localStorage
 function getCurrentRole() {
     // Сначала проверяем роль из данных авторизации
-    const savedRole = localStorage.getItem("agora_role");
-    if (savedRole) return savedRole.toLowerCase();
+    const sessionData = localStorage.getItem("agora_session");
+    if (!sessionData) return null;
 
-    // Fallback: парсим из токена (если старая сессия)
-    const token = localStorage.getItem("agora_token");
-    if (token === "secret-jwt-payload") return "ghost";
-    if (token === "guest-session") return "guest";
-
-    return null;
+    try {
+        const { role } = JSON.parse(sessionData);
+        return role || "guest";
+    } catch (_e) {
+        return null;
+    }
 }
+
 function renderConnectModule() {
     currentState = "CONTENT";
     menu.classList.remove("menu-visible");
