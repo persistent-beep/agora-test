@@ -111,7 +111,7 @@
 </template>
 </body>
 </html>
-//import { stringify } from "node:querystring";
+// ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И СОСТОЯНИЯ ==========
 
 let currentState = "HOME";
 
@@ -122,6 +122,20 @@ let isCalling = false;
 let isMuted = false;
 let currentSource = "HEADPHONES"; // или 'SPEAKERS'
 let seconds = 0;
+let callTemplateCache = null;
+
+// Объект состояний WebRTC
+let pc = null;
+let localStream = null;
+let signalingSocket = null;
+let iceConfig = null;
+let currentTargetUser = null; // Имя того, кому звоним
+//Аудио
+let audioContext = null;
+let analyser = null;
+let dataArray = null;
+let remoteAnalyser;
+let remoteDataArray;
 
 const logo = document.getElementById("logo");
 const menu = document.getElementById("menu");
@@ -129,6 +143,20 @@ const contentArea = document.getElementById("content-area");
 const moduleTitle = document.getElementById("module-title");
 const moduleContent = document.getElementById("module-content");
 
+const API_URL = "http://127.0.0.1:8000"; // Адрес твоего Python сервера
+let userRole = "guest"; // Будет обновляться при логине
+
+// ========== СЛУЖЕБНЫЕ/ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+function debounce(func, delay) {
+    let timeout;
+    return (...args) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), delay);
+    };
+}
+
+// ========== ОСНОВНАЯ НАВИГАЦИЯ И УПРАВЛЕНИЕ СОСТОЯНИЕМ ==========
 // --- ЛОГИКА НАВИГАЦИИ --- ЛОГИКА ПОВЕДЕНИЯ ЛОГОТИПА ---
 
 function handleLogoClick() {
@@ -152,7 +180,7 @@ function handleLogoClick() {
 }
 
 function toMenu() {
-    if (!localStorage.getItem("agora_token")) {
+    if (!localStorage.getItem("agora_session")) {
         toHome();
         return;
     }
@@ -169,7 +197,24 @@ function toHome() {
     menu.classList.remove("menu-visible");
     contentArea.classList.remove("content-visible");
 }
+// --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ МОДУЛЕЙ ---
+function openModule(title, text) {
+    currentState = "CONTENT";
+    menu.classList.remove("menu-visible");
+    moduleTitle.innerText = title;
 
+    if (title === "PLAY") {
+        const template = document.getElementById("template-logout");
+        moduleContent.innerHTML = template.innerHTML;
+    } else {
+        moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
+    }
+    setTimeout(() => {
+        contentArea.classList.add("content-visible");
+    }, 300);
+}
+
+// ========== АВТОРИЗАЦИЯ И АУТЕНТИФИКАЦИЯ ==========
 // отрисовка модуля авторизации
 function renderAuthModule() {
     currentState = "AUTH";
@@ -183,7 +228,6 @@ function renderAuthModule() {
         contentArea.classList.add("content-visible");
     }, 300);
 }
-
 // change auth button to enter
 function updateAuthBtn() {
     const input = document.getElementById("auth-token");
@@ -194,7 +238,6 @@ function updateAuthBtn() {
         btn.innerText = "GUEST";
     }
 }
-
 // Заглушка для отправки (пока без Python)
 async function handleAuthSubmit() {
     const input = document.getElementById("auth-token");
@@ -214,7 +257,8 @@ async function handleAuthSubmit() {
         if (response.ok) {
             const data = await response.json();
             const session = {
-                token: data.token,
+                token: tokenValue,
+                contacts: data.contacts,
                 role: data.role,
             };
             localStorage.setItem("agora_session", JSON.stringify(session));
@@ -228,57 +272,17 @@ async function handleAuthSubmit() {
         console.error("server_offline", error);
         input.placeholder = "SERVER_OFFLINE";
     }
-} // end of handle auth
-
-// --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ПРОСТЫХ МОДУЛЕЙ ---
-function openModule(title, text) {
-    currentState = "CONTENT";
-    menu.classList.remove("menu-visible");
-    moduleTitle.innerText = title;
-
-    if (title === "PLAY") {
-        const template = document.getElementById("template-logout");
-        moduleContent.innerHTML = template.innerHTML;
-    } else {
-        moduleContent.innerHTML = `<div class="placeholder">${text}</div>`;
-    }
-    setTimeout(() => {
-        contentArea.classList.add("content-visible");
-    }, 300);
 }
+// end of handle auth
 //функция логаут
-
 function handleLogout() {
-    localStorage.removeItem("agora_token");
-    localStorage.removeItem("agora_role");
+    localStorage.removeItem("agora_session");
     location.reload();
 }
 
-// --- ЛОГИКА МОДУЛЯ CONNECT ---
-
+// --- ЛОГИКА МОДУЛЯ CONNECT ---// ========== МОДУЛЬ CONNECT И РАБОТА С КОНТАКТАМИ ==========
 // 1. Показать список контактов
-// === КОНФИГУРАЦИЯ КОНТАКТОВ ПО РОЛЯМ ===
-const CONTACTS_MAP = {
-    "guest": ["GHOST", "SARAH CONNOR", "NEO", "OPERATOR"], // GHOST видит всех (кроме себя)
-    "ghost": ["SARAH CONNOR", "NEO", "OPERATOR"], // алиас для admin
-    "sarah connor": ["GHOST"], // алиас
-    "neo": ["GHOST", "OPERATOR"], // NEO видит GHOST и OPERATOR
-    "operator": ["GHOST", "NEO"],
-};
-
-// Получение текущей роли из localStorage
-function getCurrentRole() {
-    // Сначала проверяем роль из данных авторизации
-    const sessionData = localStorage.getItem("agora_session");
-    if (!sessionData) return null;
-
-    try {
-        const { role } = JSON.parse(sessionData);
-        return role || "guest";
-    } catch (_e) {
-        return null;
-    }
-}
+// Получение текущей роли из localStorage и отрисовка модуля
 
 function renderConnectModule() {
     currentState = "CONTENT";
@@ -290,22 +294,28 @@ function renderConnectModule() {
     const clone = template.content.cloneNode(true);
     const listContainer = clone.getElementById("dynamic-contact-list");
 
-    // получаем контакты для текущей роли
-    const role = getCurrentRole();
-    const contacts = CONTACTS_MAP[role] || [];
-
-    if (contacts.length === 0) {
+    // получаем данные из localstorage
+    const sessionData = JSON.parse(
+        localStorage.getItem("agora_session") || "{}",
+    );
+    const contacts = sessionData.contacts;
+    // проверка на null, undefiend или {}
+    if (!contacts || (Array.isArray(contacts) && contacts.length === 0)) {
         const noAccess = document.createElement("div");
         noAccess.className = "placeholder";
         noAccess.style.color = "#444";
         noAccess.textContent = "NO TARGETS";
         listContainer.appendChild(noAccess);
-    } else {
-        contacts.forEach((contactName) => {
+    } else { // Походу если пришло одно слово оно перестает быть массивом
+        const contactsArray = Array.isArray(contacts)
+            ? contacts
+            : contacts.split(",");
+
+        contactsArray.forEach((contactName) => {
             const btn = document.createElement("div");
             btn.className = "contact-item";
-            btn.textContent = contactName;
-            btn.onclick = () => initCallInterface(contactName);
+            btn.textContent = contactName.trim().toUpperCase();
+            btn.onclick = () => initCallInterface(contactName.trim());
             listContainer.appendChild(btn);
         });
     }
@@ -318,10 +328,8 @@ function renderConnectModule() {
     }, 300);
 }
 
-// 2. Инициализация интерфейса звонка
-
-let callTemplateCache = null;
-
+// ========== МОДУЛЬ ЗВОНКОВ И АУДИО ИНТЕРФЕЙС ==========
+//  Инициализация интерфейса звонка
 function initCallInterface(name) {
     moduleTitle.innerText = name; // Имя контакта в заголовок
 
@@ -340,31 +348,59 @@ function initCallInterface(name) {
     //start animations
     startWaveAnimation();
 }
-
+// Функция для получения ICE-серверов с бэкенда
+async function fetchIceServers() {
+    try {
+        const response = await fetch(
+            `${API_URL}/ice-servers?role=${encodeURIComponent(userRole)}`,
+        );
+        const data = await response.json();
+        iceConfig = data.iceServers;
+    } catch (e) {
+        console.error("Ошибка получения ICE конфигурации:", e);
+        // Резервный STUN на случай сбоя
+        iceConfig = [{ urls: "stun:stun.l.google.com:19302" }];
+    }
+}
 // --- ЛОГИКА ЗВОНКА И ИНТЕРАКТИВА ---
-
-function toggleCallAction() {
+async function toggleCallAction() {
     const btn = document.getElementById("btn-action");
     const statusEl = document.getElementById("call-status");
 
     if (!isCalling) {
-        // НАЧАТЬ ЗВОНОК
-        isCalling = true;
-        btn.innerText = "END CALL";
-        btn.className = "btn-large btn-red";
-        statusEl.innerText = "CALLING...";
+        try {
+            statusEl.innerText = "INITIATION";
 
-        // Имитация соединения через 1.5 сек
-        setTimeout(() => {
-            if (isCalling) {
-                statusEl.innerText = "CONNECTED";
-                statusEl.style.color = "#4aff4a"; // Светло-зеленый текст
-                startTimer();
-            }
-        }, 1500);
+            await setupAudio();
+            await fetchIceServers();
+
+            const sessionData = JSON.parse(
+                localStorage.getItem("agora_session") || "{}",
+            );
+            const myName = sessionData.role || "guest";
+            const roomId = getRoomId(myName, moduleTitle.innerText);
+
+            initSignaling(roomId);
+            // НАЧАТЬ ЗВОНОК
+            isCalling = true;
+            btn.innerText = "END CALL";
+            btn.className = "btn-large btn-red";
+            //statusEl.innerText = "CALLING...";
+        } catch (err) {
+            console.error();
+            statusEl.innerText = "EROR";
+            statusEl.style.color = "#ff4a4a";
+        }
+        //        setTimeout(() => {
+        //            if (isCalling) {
+        //                statusEl.innerText = "CONNECTED";
+        //                statusEl.style.color = "#4aff4a"; // Светло-зеленый текст
+        //                startTimer();
+        //            }
+        //        }, 1500);
     } else {
         // ЗАВЕРШИТЬ ЗВОНОК
-        endCall();
+        stopCall();
         // Возврат к списку контактов через секунду
         setTimeout(renderConnectModule, 1000);
     }
@@ -416,6 +452,137 @@ function toggleSource() {
     }
 }
 
+function activateVosklet() {
+    // Функция для кнопки VOSKLET (заглушка)
+    console.log("Vosklet activated");
+}
+
+// ========== WebRTC И СИГНАЛИНГ ==========
+
+function getRoomId(userA, userB) {
+    return [userA, userB].sort().join("_");
+}
+
+function initSignaling(roomId) {
+    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+    signalingSocket = new WebSocket(
+        `${wsProtocol}://${window.location.host}/ws/${roomId}`,
+    );
+
+    signalingSocket.onmessage = async (event) => {
+        const message = JSON.parse(event.data);
+        handleSignalingMessage(message);
+    };
+}
+async function createPeerConnection(roomId) {
+    // Используем iceConfig, который мы получили ранее из /ice-servers
+    pc = new RTCPeerConnection({ iceServers: iceConfig });
+
+    // 1. Обработка ICE-кандидатов (отправляем их другому пиру через сервер)
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            signalingSocket.send(JSON.stringify({
+                type: "candidate",
+                candidate: event.candidate,
+            }));
+        }
+    };
+
+    // 2. Обработка входящего медиа-потока от собеседника
+    pc.ontrack = (event) => {
+        console.log("Получен удаленный поток");
+        const remoteStream = event.streams[0];
+
+        const remoteAudio = new Audio();
+        remoteAudio.srcObject = remoteStream;
+        remoteAudio.play();
+
+        if (audioContext) {
+            remoteAnalyser = audioContext.createAnalyser();
+            remoteAnalyser.fftSize = 256;
+            const source = audioContext.createAnalyser();
+            source.connect(remoteAnalyser);
+
+            remoteDataArray = new Uint8Array(remoteAnalyser.frequencyBinCount);
+        }
+    };
+
+    // 3. Добавляем наш локальный микрофон в соединение
+    if (localStream) {
+        localStream.getTracks().forEach((track) =>
+            pc.addTrack(track, localStream)
+        );
+    }
+}
+async function handleSignalingMessage(message) {
+    switch (message.type) {
+        case "start_offer": {
+            // Сервер говорит, что мы - "вызывающий". Создаем оффер.
+            await createPeerConnection();
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            signalingSocket.send(
+                JSON.stringify({ type: "offer", sdp: offer.sdp }),
+            );
+            break;
+        }
+
+        case "offer": {
+            // Мы получили вызов. Создаем ответ (answer).
+            await createPeerConnection();
+            await pc.setRemoteDescription(
+                new RTCSessionDescription({ type: "offer", sdp: message.sdp }),
+            );
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            signalingSocket.send(
+                JSON.stringify({ type: "answer", sdp: answer.sdp }),
+            );
+            break;
+        }
+
+        case "answer":
+            // Наш оффер приняли. Устанавливаем удаленное описание.
+            await pc.setRemoteDescription(
+                new RTCSessionDescription({ type: "answer", sdp: message.sdp }),
+            );
+            break;
+
+        case "candidate":
+            // Получили данные о сетевом пути собеседника.
+            try {
+                await pc.addIceCandidate(
+                    new RTCIceCandidate(message.candidate),
+                );
+            } catch (e) {
+                console.error("Ошибка добавления ICE кандидата", e);
+            }
+            break;
+
+        case "peer_disconnected":
+            // Собеседник отключился — сбрасываем звонок.
+            stopCall();
+            break;
+    }
+}
+function stopCall() {
+    if (pc) {
+        pc.close();
+        pc = null;
+    }
+    if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+        localStream = null;
+    }
+    if (signalingSocket) {
+        signalingSocket.close();
+        signalingSocket = null;
+    }
+
+    // Возвращаем UI в состояние ожидания
+    stopCallSimulation(); // Ваша старая функция для очистки анимации
+    console.log("Звонок завершен");
+}
 // --- ТАЙМЕР ---
 function startTimer() {
     stopTimer();
@@ -444,6 +611,26 @@ function updateCanvasDimensions() {
         c2.height = c2.offsetHeight;
     }
 }
+async function setupAudio() {
+    try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+        });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        const source = audioContext.createMediaStreamSource(localStream);
+
+        analyser.fftSize = 256;
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+        source.connect(analyser);
+
+        console.log("Микрофон захвачен успешно");
+    } catch (err) {
+        console.error("Доступ к микрофону запрещен:", err);
+        dataArray = new Uint8Array(128);
+    }
+}
 
 function stopCallSimulation() {
     isCalling = false;
@@ -456,33 +643,21 @@ function startWaveAnimation() {
     const ctxMic = document.getElementById("mic-canvas").getContext("2d");
 
     // Функция рисования волны
-    function draw(ctx, color, active, isMutedState) {
+    function draw(ctx, color, active, volumeData) {
         const w = ctx.canvas.width;
         const h = ctx.canvas.height;
         ctx.clearRect(0, 0, w, h);
 
         // Настройки
         ctx.fillStyle = color;
-        const bars = 50;
+        const bars = 80; // вот тут бы поиграть количеством
         const barWidth = w / bars;
 
         for (let i = 0; i < bars; i++) {
-            let barHeight;
-
-            if (active && !isMutedState) {
-                // Случайная высота для эффекта голоса
-                // Если статус CONNECTED - высота большая, если нет - маленькая "шум"
-                const multiplier =
-                    document.getElementById("call-status").innerText ===
-                            "CONNECTED"
-                        ? 0.8
-                        : 0.1;
-                barHeight = Math.random() * h * multiplier;
-            } else {
-                // Тишина (полоска по центру)
-                barHeight = 2;
-            }
-
+            // Если звонок идет, берем данные из анализатора, иначе 0
+            const val = active ? volumeData[i] || 0 : 0;
+            // Рассчитываем высоту (минимум 2 пикселя для "линии жизни")
+            const barHeight = (val / 255) * h * 0.9 + 2;
             const x = i * barWidth;
             const y = (h - barHeight) / 2;
 
@@ -491,29 +666,38 @@ function startWaveAnimation() {
     }
 
     function loop() {
+        if (currentState !== "CONTENT") {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+            return;
+        }
+        // 1. Получаем данные своего микрофона
+        if (analyser && !isMuted && dataArray) {
+            analyser.getByteFrequencyData(dataArray);
+        } else if (dataArray) {
+            dataArray.fill(0); // Тишина, если выключен микрофон
+        }
+
+        // 2. Получаем данные собеседника
+        if (remoteAnalyser && remoteDataArray) {
+            remoteAnalyser.getByteFrequencyData(remoteDataArray);
+        } else if (remoteDataArray) {
+            remoteDataArray.fill(0);
+        }
+
         // Цвет входящего (верхний) - #a0a0a0 или активный
-        draw(ctxRemote, "#a0a0a0", isCalling, false);
+        draw(ctxRemote, "#a0a0a0", isCalling, remoteDataArray || []);
 
         // Цвет исходящего (нижний) - зависит от Mute
         const micColor = isMuted ? "#552222" : "#a0a0a0";
-        draw(ctxMic, micColor, isCalling, isMuted);
+        draw(ctxMic, micColor, isCalling, dataArray);
 
         animationFrameId = requestAnimationFrame(loop);
     }
     loop();
 }
 
-// Следим за ресайзом окна для канваса
-
-function debounce(func, delay) {
-    let timeout;
-    return (...args) => {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), delay);
-    };
-}
-
-self.addEventListener("resize", debounce(updateCanvasDimensions, 100));
+// ========== PWA И SERVICE WORKER ==========
 
 // Регистрация Service Worker для PWA
 if ("serviceWorker" in navigator) {
@@ -543,6 +727,8 @@ self.addEventListener("appinstalled", () => {
     console.log("[PWA] Приложение установлено");
     deferredPrompt = null;
 });
+// ========== ИНИЦИАЛИЗАЦИЯ И ОБРАБОТЧИКИ СОБЫТИЙ ==========
+window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
         body, html {
             margin: 0;
             padding: 0;
@@ -1008,129 +1194,6 @@ self.addEventListener("appinstalled", () => {
   "categories": ["productivity", "communication"],
   "lang": "ru"
 }
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-app = FastAPI()
-
-# Разрешаем корс 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins = ['*'],
-    allow_methods = ['*'],
-    allow_headers = ['*'],
-)
-
-class AuthRequest(BaseModel):
-    token: str
-
-USERS = {
-        "ghost": {
-            "access_token": "ghost",
-            "role": "ghost",
-            "display_name": "GHOST"
-        },
-        "sarah": {
-            "access_token": "sarah connor", 
-            "role": "sarah connor",
-            "display_name": "SARAH CONNOR"
-        },
-        "neo": {
-            "access_token": "neo",
-            "role": "neo",
-            "display_name": "NEO"
-        },
-        "operator": {
-            "access_token": "operator",
-            "role": "operator",
-            "display_name": "OPERATOR"
-        },
-        "guest": {
-            "access_token": "guest",
-            "role": "guest",
-            "display_name": "GUEST"
-        }
-    }
-
-@app.post("/auth/login")
-async def login(data: AuthRequest):
-    token = data.token.lower().strip()
-    
-    user = USERS.get(token)
-        
-    if not user:
-        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
-            
-    return {
-        "status": "success",
-        "access_token": user["access_token"],
-        "role": user["role"],
-        "display_name": user["display_name"]
-    }
-
-
-# Загрузка ICE-серверов для TURN/STUN
-def load_ice_servers(filename="ice_servers.json"):
-    with open(filename, "r") as f:
-        return json.load(f)
-
-# Менеджер подключений с комнатами
-class ConnectionManager:
-    def __init__(self):
-        self.rooms: Dict[str, List[WebSocket]] = {}
-
-    async def connect(self, room_id: str, websocket: WebSocket):
-        await websocket.accept()
-        if room_id not in self.rooms:
-            self.rooms[room_id] = []
-        self.rooms[room_id].append(websocket)
-
-    def disconnect(self, room_id: str, websocket: WebSocket):
-        self.rooms[room_id].remove(websocket)
-        if not self.rooms[room_id]:
-            del self.rooms[room_id]
-
-    async def broadcast(self, room_id: str, sender: WebSocket, message: str):
-        for connection in self.rooms.get(room_id, []):
-            if connection != sender:
-                await connection.send_text(message)
-
-manager = ConnectionManager()
-
-
-# Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
-@app.get("/turn")
-async def get_turn():
-    try:
-        ice_servers = load_ice_servers("ice_servers.json")
-    except Exception:  # обработаем случай ошибки чтения файла
-        return JSONResponse(content={"iceServers": []}, status_code=500)
-    return JSONResponse(content=ice_servers)
-
-# WebSocket endpoint для сигнализации
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await manager.connect(room_id, websocket)
-    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
-    try:    
-        if len(manager.rooms[room_id]) == 2:
-            first = manager.rooms[room_id][0]
-        # Первый клиент начинает offer по сигналу
-            await first.send_json({"type": "start_offer"})
-        while True:
-            data = await websocket.receive_text()
-            await manager.broadcast(room_id, websocket, data)
-    except WebSocketDisconnect:
-        manager.disconnect(room_id, websocket)
-
-
-
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 const CACHE_NAME = "agora-hub-v7";
 const ASSETS = [
   "./",
@@ -1203,3 +1266,124 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+import os
+import json
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+load_dotenv()
+
+app = FastAPI()
+
+# Разрешаем корс 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins = ['*'],
+    allow_methods = ['*'],
+    allow_headers = ['*'],
+)
+
+class AuthRequest(BaseModel):
+    token: str
+
+# Менеджер подключений с комнатами
+class ConnectionManager:
+    def __init__(self):
+        self.rooms: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, room_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if room_id not in self.rooms:
+            self.rooms[room_id] = []
+        self.rooms[room_id].append(websocket)
+
+    def disconnect(self, room_id: str, websocket: WebSocket):
+        # proverka komnaty
+        if room_id in self.rooms:
+            try:
+                self.rooms[room_id].remove(websocket)
+            except ValueError:
+                pass
+            if not self.rooms[room_id]:
+                del self.rooms[room_id]
+
+    async def broadcast_json(self, room_id: str, sender: WebSocket, message: dict):
+        for connection in self.rooms.get(room_id, []):
+            if connection != sender:
+                await connection.send_json(message)
+
+manager = ConnectionManager()
+
+# Функция получения конфига TURN для конкретной роли
+def get_ice_servers(role: str):
+    # Приводим роль к верхнему регистру для поиска в ENV (например, GHOST)
+    env_prefix = role.split()[0].upper() # "sarah connor" -> "SARAH"
+    
+    username = os.getenv(f"{env_prefix}_USER", "default_user")
+    credential = os.getenv(f"{env_prefix}_PASS", "default_pass")
+    domain = os.getenv("TURN")
+    
+    return [
+        {
+            "urls": [
+                f"stun:{domain}:80",
+                f"turn:{domain}:80",
+                f"turn:{domain}:443",
+                f"turn:{domain}:443?transport=tcp"
+            ],
+            "username": username,
+            "credential": credential
+        }
+    ]
+
+@app.post("/auth/login")
+async def login(data: AuthRequest):
+    token = data.token.lower().strip()
+    
+    users = json.loads(os.getenv("USERS_JSON","{}"))
+    user = users.get(token)
+    contacts = json.loads(os.getenv("ACCESS_MATRIX","{}"))
+    addressee = contacts.get(token)
+        
+    if not user:
+        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
+            
+    return {
+        "status": "success",
+        "contacts": addressee,
+        "role": user["role"],
+        "display_name": user["display_name"]
+    }
+
+# Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
+@app.get("/ice-servers")
+async def get_ice_config(role: str="guest"):
+    try:
+        servers = get_ice_servers(role)
+        return {"iceServers": servers}
+    except Exception as e:  # обработаем случай ошибки чтения файла
+        print(f"error gen {e}")
+        return {"urls":[{"urls":"stun:stun.l.google.com:19302"}]}
+
+# WebSocket endpoint для сигнализации
+@app.websocket("/ws/{room_id}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str):
+    await manager.connect(room_id, websocket)
+    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
+    try:    
+        if len(manager.rooms[room_id]) == 2:
+            first = manager.rooms[room_id][0]
+        # Первый клиент начинает offer по сигналу
+            await first.send_json({"type": "start_offer"})
+        while True:
+            data = await websocket.receive_json()
+            await manager.broadcast_json(room_id, websocket, data)
+    except WebSocketDisconnect:
+        manager.disconnect(room_id, websocket)
+        await manager.broadcast_json(room_id, websocket, {"type":"peer_disconnected"})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
