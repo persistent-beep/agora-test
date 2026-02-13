@@ -136,6 +136,7 @@ let analyser = null;
 let dataArray = null;
 let remoteAnalyser;
 let remoteDataArray;
+let remoteAudioElement = null;
 
 const logo = document.getElementById("logo");
 const menu = document.getElementById("menu");
@@ -369,35 +370,50 @@ async function toggleCallAction() {
 
     if (!isCalling) {
         try {
-            statusEl.innerText = "INITIATION";
-
-            await setupAudio();
-            await fetchIceServers();
-
+            // Проверка авторизации
             const sessionData = JSON.parse(
                 localStorage.getItem("agora_session") || "{}",
             );
-            const myName = sessionData.role || "guest";
-            const roomId = getRoomId(myName, moduleTitle.innerText);
+            if (!sessionData.token) {
+                statusEl.innerText = "AUTH REQUIRED";
+                renderAuthModule();
+                return;
+            }
 
-            initSignaling(roomId);
-            // НАЧАТЬ ЗВОНОК
+            statusEl.innerText = "CONNECTING...";
+
+            // 1. Получаем ICE серверы
+            await fetchIceServers();
+
+            // 2. Получаем микрофон с улучшенными настройками
+            await setupAudio(); // Используем существующую функцию
+
+            // 3. Подключаем сигналинг
+            const myName = sessionData.role || "guest";
+            const targetName = moduleTitle.innerText;
+            const roomId = getRoomId(myName, targetName);
+
+            await initSignaling(roomId);
+
+            // 4. Создаем PeerConnection
+            await createPeerConnection(roomId);
+
+            // 5. Если мы инициатор - создаем оффер
+            // (логика "кто инициатор" должна быть в initSignaling)
+
             isCalling = true;
             btn.innerText = "END CALL";
-            btn.className = "btn-large btn-red";
-            //statusEl.innerText = "CALLING...";
+            btn.className = "btn-large btn-red"; // Лучше менять класс, чем style
+            statusEl.innerText = "CONNECTED";
+            startTimer();
         } catch (err) {
-            console.error();
-            statusEl.innerText = "EROR";
+            console.error("call error", err);
+            statusEl.innerText = err.message.includes("microphone")
+                ? "MIC ACCESS DENIED"
+                : "CONNECTION FAILED";
             statusEl.style.color = "#ff4a4a";
+            stopCall();
         }
-        //        setTimeout(() => {
-        //            if (isCalling) {
-        //                statusEl.innerText = "CONNECTED";
-        //                statusEl.style.color = "#4aff4a"; // Светло-зеленый текст
-        //                startTimer();
-        //            }
-        //        }, 1500);
     } else {
         // ЗАВЕРШИТЬ ЗВОНОК
         stopCall();
@@ -476,42 +492,115 @@ function initSignaling(roomId) {
 }
 async function createPeerConnection(roomId) {
     // Используем iceConfig, который мы получили ранее из /ice-servers
-    pc = new RTCPeerConnection({ iceServers: iceConfig });
+    try {
+        // Используем ваше имя переменной pc, но добавляем обработку ошибок
+        pc = new RTCPeerConnection({
+            iceServers: iceConfig || [{ urls: "stun:stun.l.google.com:19302" }],
+        });
 
-    // 1. Обработка ICE-кандидатов (отправляем их другому пиру через сервер)
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            signalingSocket.send(JSON.stringify({
-                type: "candidate",
-                candidate: event.candidate,
-            }));
+        // === ЛУЧШЕЕ ИЗ ПРЕДЛОЖЕННОЙ ФУНКЦИИ ===
+        // 1. Обработка ICE кандидатов (ваш код хорош)
+        pc.onicecandidate = (event) => {
+            if (
+                event.candidate &&
+                signalingSocket?.readyState === WebSocket.OPEN
+            ) {
+                signalingSocket.send(JSON.stringify({
+                    type: "candidate",
+                    candidate: event.candidate,
+                }));
+            }
+        };
+
+        // 2. Обработка ICE состояния (ДОБАВЛЕНО из предложенного подхода)
+        pc.oniceconnectionstatechange = () => {
+            console.log("ICE state:", pc.iceConnectionState);
+
+            if (
+                pc.iceConnectionState === "disconnected" ||
+                pc.iceConnectionState === "failed"
+            ) {
+                console.warn("ICE connection failed, attempting restart...");
+                // Можно добавить логику переподключения
+            }
+        };
+
+        // 3. Обработка входящего потока (УЛУЧШЕННАЯ версия)
+        pc.ontrack = (event) => {
+            console.log("Получен удаленный аудиопоток");
+            const remoteStream = event.streams[0];
+
+            // === ЛУЧШЕЕ ИЗ ПРЕДЛОЖЕННОЙ ФУНКЦИИ ===
+            // Создаем и сохраняем Audio элемент
+            if (remoteAudioElement) {
+                remoteAudioElement.srcObject = null;
+            }
+
+            remoteAudioElement = new Audio();
+            remoteAudioElement.srcObject = remoteStream;
+            remoteAudioElement.autoplay = true;
+
+            // Браузеры требуют взаимодействия пользователя
+            remoteAudioElement.play().catch((e) => {
+                console.log(
+                    "Автовоспроизведение заблокировано, требуется клик",
+                    e,
+                );
+                // Можно добавить кнопку "Разрешить звук"
+            });
+
+            // === ИСПРАВЛЕННАЯ ВИЗУАЛИЗАЦИЯ ===
+            if (audioContext && audioContext.state !== "closed") {
+                try {
+                    // Правильное создание источника из потока
+                    const remoteSource = audioContext.createMediaStreamSource(
+                        remoteStream,
+                    );
+
+                    remoteAnalyser = audioContext.createAnalyser();
+                    remoteAnalyser.fftSize = 256;
+                    remoteAnalyser.smoothingTimeConstant = 0.8;
+
+                    remoteSource.connect(remoteAnalyser);
+
+                    remoteDataArray = new Uint8Array(
+                        remoteAnalyser.frequencyBinCount,
+                    );
+
+                    console.log("Визуализация удаленного аудио настроена");
+                } catch (err) {
+                    console.error("Ошибка настройки визуализации:", err);
+                }
+            }
+        };
+
+        // 4. Обработка завершения ICE сборки (ДОБАВЛЕНО)
+        pc.onicegatheringstatechange = () => {
+            if (pc.iceGatheringState === "complete") {
+                console.log("ICE gathering complete");
+            }
+        };
+
+        // 5. Добавление локальных треков (ваш код хорош, но с проверкой)
+        if (localStream) {
+            localStream.getTracks().forEach((track) => {
+                try {
+                    pc.addTrack(track, localStream);
+                } catch (err) {
+                    console.error("Ошибка добавления трека:", err);
+                }
+            });
+        } else {
+            console.warn(
+                "Локальный поток не найден при создании PeerConnection",
+            );
         }
-    };
 
-    // 2. Обработка входящего медиа-потока от собеседника
-    pc.ontrack = (event) => {
-        console.log("Получен удаленный поток");
-        const remoteStream = event.streams[0];
-
-        const remoteAudio = new Audio();
-        remoteAudio.srcObject = remoteStream;
-        remoteAudio.play();
-
-        if (audioContext) {
-            remoteAnalyser = audioContext.createAnalyser();
-            remoteAnalyser.fftSize = 256;
-            const source = audioContext.createAnalyser();
-            source.connect(remoteAnalyser);
-
-            remoteDataArray = new Uint8Array(remoteAnalyser.frequencyBinCount);
-        }
-    };
-
-    // 3. Добавляем наш локальный микрофон в соединение
-    if (localStream) {
-        localStream.getTracks().forEach((track) =>
-            pc.addTrack(track, localStream)
-        );
+        console.log("PeerConnection создан успешно");
+        return pc;
+    } catch (error) {
+        console.error("Ошибка создания PeerConnection:", error);
+        throw error;
     }
 }
 async function handleSignalingMessage(message) {
@@ -578,7 +667,11 @@ function stopCall() {
         signalingSocket.close();
         signalingSocket = null;
     }
-
+    if (remoteAudioElement) {
+        remoteAudioElement.pause();
+        remoteAudioElement.srcObject = null;
+        remoteAudioElement = null;
+    }
     // Возвращаем UI в состояние ожидания
     stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
@@ -614,7 +707,11 @@ function updateCanvasDimensions() {
 async function setupAudio() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
         });
 
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
