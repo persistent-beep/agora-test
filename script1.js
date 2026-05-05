@@ -34,8 +34,10 @@ const contentArea = document.getElementById("content-area");
 const moduleTitle = document.getElementById("module-title");
 const moduleContent = document.getElementById("module-content");
 
-const API_URL = "http://127.0.0.1:8000"; // Адрес твоего Python сервера
+const BACKEND_URL = "https://agora-service.onrender.com";
+const API_URL = "https://agora-service.onrender.com"; // Адрес твоего Python сервера
 let userRole = "guest"; // Будет обновляться при логине
+const WS_URL = BACKEND_URL.replace(/^http/, "ws");
 
 // ========== СЛУЖЕБНЫЕ/ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
@@ -137,7 +139,7 @@ async function handleAuthSubmit() {
 
     try {
         const response = await fetch(
-            "https://exorable-nonmetrical-sena.ngrok-free.dev/auth/login",
+            "${API_URL}/auth/login",
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -466,9 +468,7 @@ function getRoomId(userA, userB) {
 function connectSignaling(token) {
     const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
     signalingSocket = new WebSocket(
-        `${wsProtocol}://${location.host}/ws?token=${
-            encodeURIComponent(token)
-        }`,
+        `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
 
     signalingSocket.onopen = () => {
