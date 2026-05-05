@@ -17,8 +17,8 @@ let pc = null;
 let localStream = null;
 let signalingSocket = null;
 let iceConfig = null;
-let incomingCallPending = false;   // входящий звонок, ждём нажатия ANSWER
-let awaitingOffer = false;        // нажали ANSWER, ждём оффер для автоответа
+let incomingCallPending = false; // входящий звонок, ждём нажатия ANSWER
+let awaitingOffer = false; // нажали ANSWER, ждём оффер для автоответа
 //Аудио
 let audioContext = null;
 let analyser = null;
@@ -151,7 +151,7 @@ async function handleAuthSubmit() {
                 token: tokenValue,
                 contacts: data.contacts,
                 role: data.role,
-                userRole = data.role;
+                userRole: data.role,
             };
             localStorage.setItem("agora_session", JSON.stringify(session));
             if (signalingSocket) signalingSocket.close();
@@ -267,7 +267,7 @@ async function toggleCallAction() {
             // Отправляем сигнал, чтобы звонящий начал создавать оффер
             signalingSocket.send(JSON.stringify({
                 type: "accept_call",
-                target: currentCallTarget
+                target: currentCallTarget,
             }));
 
             // Готовимся к звонку
@@ -279,7 +279,7 @@ async function toggleCallAction() {
 
             btn.innerText = "CONNECTING...";
             btn.className = "btn-large btn-blue";
-            btn.disabled = true;   // пока не получим оффер
+            btn.disabled = true; // пока не получим оффер
             statusEl.innerText = "WAITING FOR OFFER";
             statusEl.style.color = "#aaa";
         } catch (err) {
@@ -308,7 +308,7 @@ async function toggleCallAction() {
             signalingSocket.send(JSON.stringify({
                 type: "accept_call",
                 target: currentCallTarget, // тот, кто звонил
-                sdp: answer.sdp
+                sdp: answer.sdp,
             }));
 
             // 4. Обновляем UI: мы теперь в разговоре
@@ -570,18 +570,21 @@ async function handleSignalingMessage(message) {
             console.log("[Signal] Offer received");
             if (awaitingOffer) {
                 // Мы уже нажали ANSWER и ждём оффер – отвечаем автоматически
-                pendingOffer = message.sdp;      // временно сохраним для единообразного ответа
+                pendingOffer = message.sdp; // временно сохраним для единообразного ответа
                 // Вызываем тот же код, что и в ветке pendingOffer, но без клика
                 try {
                     await pc.setRemoteDescription(
-                        new RTCSessionDescription({ type: "offer", sdp: pendingOffer })
+                        new RTCSessionDescription({
+                            type: "offer",
+                            sdp: pendingOffer,
+                        }),
                     );
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
                     signalingSocket.send(JSON.stringify({
                         type: "answer",
                         target: currentCallTarget,
-                        sdp: answer.sdp
+                        sdp: answer.sdp,
                     }));
                     pendingOffer = null;
                     awaitingOffer = false;
