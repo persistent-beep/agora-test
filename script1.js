@@ -139,7 +139,7 @@ async function handleAuthSubmit() {
 
     try {
         const response = await fetch(
-            "${API_URL}/auth/login",
+            `${API_URL}/auth/login`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -155,6 +155,7 @@ async function handleAuthSubmit() {
                 role: data.role,
                 userRole: data.role,
             };
+            userRole = data.role;
             localStorage.setItem("agora_session", JSON.stringify(session));
             if (signalingSocket) signalingSocket.close();
             connectSignaling(tokenValue);
