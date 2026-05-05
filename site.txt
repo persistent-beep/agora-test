@@ -111,9 +111,235 @@
 </template>
 </body>
 </html>
+import os
+import json
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+load_dotenv()
+
+app = FastAPI()
+
+base_path = os.path.dirname(os.path.realpath('main.py'))
+
+
+# Разрешаем корс 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins = ['*'],
+    allow_methods = ['*'],
+    allow_headers = ['*'],
+)
+
+class AuthRequest(BaseModel):
+    token: str
+
+## Менеджер подключений с комнатами
+#class ConnectionManager:
+#    def __init__(self):
+#        self.rooms: dict[str, list[WebSocket]] = {}
+#
+#    async def connect(self, room_id: str, websocket: WebSocket):
+#        await websocket.accept()
+#        if room_id not in self.rooms:
+#            self.rooms[room_id] = []
+#        self.rooms[room_id].append(websocket)
+#
+#    def disconnect(self, room_id: str, websocket: WebSocket):
+#        # proverka komnaty
+#        if room_id in self.rooms:
+#            try:
+#                self.rooms[room_id].remove(websocket)
+#            except ValueError:
+#                pass
+#            if not self.rooms[room_id]:
+#                del self.rooms[room_id]
+#
+#    async def broadcast_json(self, room_id: str, sender: WebSocket, message: dict):
+#        for connection in self.rooms.get(room_id, []):
+#            if connection != sender:
+#                await connection.send_json(message)
+
+#manager = ConnectionManager()
+# вместо коннектинг используем юзер менеджер ===================================================
+
+# Заменяем старый ConnectionManager на UserManager
+class UserManager:
+    def __init__(self):
+        # user_id (role) → WebSocket
+        self.online: dict[str, WebSocket] = {}
+
+    async def connect_user(self, user_id: str, ws: WebSocket):
+        # Если уже был онлайн с другого устройства — отключаем старый
+        if user_id in self.online:
+            old_ws = self.online[user_id]
+            try:
+                await old_ws.close(code=4002, reason="replaced_by_new_session")
+            except:
+                pass
+        await ws.accept()
+        self.online[user_id] = ws
+
+    def disconnect_user(self, user_id: str):
+        self.online.pop(user_id, None)
+
+    def get_user_ws(self, user_id: str) -> WebSocket | None:
+        return self.online.get(user_id)
+
+user_manager = UserManager()
+
+# Проверка токена (используем ту же логику, что и в /auth/login)
+def get_user_from_token(token: str) -> dict | None:
+    users = json.loads(os.getenv("USERS_JSON", "{}"))
+    return users.get(token.lower().strip())
+
+# Функция получения конфига TURN для конкретной роли
+def get_ice_servers(role: str):
+    # Приводим роль к верхнему регистру для поиска в ENV (например, GHOST)
+    env_prefix = role.split()[0].upper() # "sarah connor" -> "SARAH"
+    
+    username = os.getenv(f"{env_prefix}_USER", "default_user")
+    credential = os.getenv(f"{env_prefix}_PASS", "default_pass")
+    domain = os.getenv("TURN")
+    
+    return [
+        {
+            "urls": [
+                f"stun:{domain}:80",
+                f"turn:{domain}:80",
+                f"turn:{domain}:443",
+                f"turn:{domain}:443?transport=tcp"
+            ],
+            "username": username,
+            "credential": credential
+        }
+    ]
+
+
+# Маршрутизация сообщений
+async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSocket):
+    msg_type = message.get("type")
+    
+    if msg_type == "call_request":
+        target = message["target"]
+        target_ws = user_manager.get_user_ws(target)
+        if target_ws:
+            # Пересылаем входящий вызов
+            await target_ws.send_json({
+                "type": "incoming_call",
+                "from": sender_id,
+                "room_id": f"{sender_id}_{target}"   # для совместимости, если нужно
+            })
+        else:
+            # Здесь будет отправка push (опционально)
+            # send_push(target, {...})
+            pass
+
+    elif msg_type == "accept_call":
+        target = message["target"]
+        target_ws = user_manager.get_user_ws(target)
+        if target_ws:
+            await target_ws.send_json({
+                "type": "start_offer",
+                "target": sender_id   # тому, кто звонил, говорим начинать
+            })
+
+    elif msg_type in ("offer", "answer", "candidate"):
+        target = message.get("target")
+        if target:
+            target_ws = user_manager.get_user_ws(target)
+            if target_ws:
+                # Добавляем поле from для идентификации отправителя
+                forwarded = {**message, "from": sender_id}
+                await target_ws.send_json(forwarded)
+
+    elif msg_type == "call_end":
+        target = message.get("target")
+        if target:
+            target_ws = user_manager.get_user_ws(target)
+            if target_ws:
+                await target_ws.send_json({"type": "peer_disconnected"})
+
+@app.post("/auth/login")
+async def login(data: AuthRequest):
+    token = data.token.lower().strip()
+    
+    users = json.loads(os.getenv("USERS_JSON","{}"))
+    user = users.get(token)
+    contacts = json.loads(os.getenv("ACCESS_MATRIX","{}"))
+    addressee = contacts.get(token)
+        
+    if not user:
+        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
+            
+    return {
+        "status": "success",
+        "contacts": addressee,
+        "role": user["role"],
+        "display_name": user["display_name"]
+    }
+
+# Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
+@app.get("/ice-servers")
+async def get_ice_config(role: str="guest"):
+    try:
+        servers = get_ice_servers(role)
+        return {"iceServers": servers}
+    except Exception as e:  # обработаем случай ошибки чтения файла
+        print(f"error gen {e}")
+        return {"urls":[{"urls":"stun:stun.l.google.com:19302"}]}
+
+# WebSocket endpoint для сигнализации
+#@app.websocket("/ws/{room_id}")
+#async def websocket_endpoint(websocket: WebSocket, room_id: str):
+#    await manager.connect(room_id, websocket)
+#    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
+#    try:    
+#        if len(manager.rooms[room_id]) == 2:
+#            first = manager.rooms[room_id][0]
+#        # Первый клиент начинает offer по сигналу
+#            await first.send_json({"type": "start_offer"})
+#        while True:
+#            data = await websocket.receive_json()
+#            await manager.broadcast_json(room_id, websocket, data)
+#    except WebSocketDisconnect:
+#        manager.disconnect(room_id, websocket)
+#        await manager.broadcast_json(room_id, websocket, {"type":"peer_disconnected"})
+
+# Новый WebSocket endpoint
+@app.websocket("/ws")
+async def websocket_call(websocket: WebSocket, token: str = Query("guest")):
+    user_info = get_user_from_token(token)
+    if not user_info:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+    user_id = user_info["role"]   # например "ALICE"
+    await user_manager.connect_user(user_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            await handle_signal_message(user_id, data, websocket)
+    except WebSocketDisconnect:
+        user_manager.disconnect_user(user_id)
+
+
+@app.get("/index")
+async def getindex():
+    return FileResponse(os.path.join(base_path,'index.html'))
+
+app.mount("/static", StaticFiles(directory=base_path), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И СОСТОЯНИЯ ==========
 
 let currentState = "HOME";
+let currentCallTarget = null; // роль того, с кем идёт звонок
 
 // Переменные для звонка
 let callTimerInterval;
@@ -129,7 +355,8 @@ let pc = null;
 let localStream = null;
 let signalingSocket = null;
 let iceConfig = null;
-let currentTargetUser = null; // Имя того, кому звоним
+let incomingCallPending = false;   // входящий звонок, ждём нажатия ANSWER
+let awaitingOffer = false;        // нажали ANSWER, ждём оффер для автоответа
 //Аудио
 let audioContext = null;
 let analyser = null;
@@ -137,6 +364,7 @@ let dataArray = null;
 let remoteAnalyser;
 let remoteDataArray;
 let remoteAudioElement = null;
+let pendingOffer = null;
 
 const logo = document.getElementById("logo");
 const menu = document.getElementById("menu");
@@ -247,7 +475,7 @@ async function handleAuthSubmit() {
 
     try {
         const response = await fetch(
-            "http://127.0.0.1:8000/auth/login",
+            "https://exorable-nonmetrical-sena.ngrok-free.dev/auth/login",
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -261,8 +489,11 @@ async function handleAuthSubmit() {
                 token: tokenValue,
                 contacts: data.contacts,
                 role: data.role,
+                userRole = data.role;
             };
             localStorage.setItem("agora_session", JSON.stringify(session));
+            if (signalingSocket) signalingSocket.close();
+            connectSignaling(tokenValue);
             toMenu();
         } else {
             input.style.borderColor = "#ff4a4a";
@@ -277,6 +508,7 @@ async function handleAuthSubmit() {
 // end of handle auth
 //функция логаут
 function handleLogout() {
+    if (signalingSocket) signalingSocket.close();
     localStorage.removeItem("agora_session");
     location.reload();
 }
@@ -332,6 +564,7 @@ function renderConnectModule() {
 // ========== МОДУЛЬ ЗВОНКОВ И АУДИО ИНТЕРФЕЙС ==========
 //  Инициализация интерфейса звонка
 function initCallInterface(name) {
+    currentCallTarget = name.trim();
     moduleTitle.innerText = name; // Имя контакта в заголовок
 
     if (!callTemplateCache) {
@@ -367,9 +600,80 @@ async function fetchIceServers() {
 async function toggleCallAction() {
     const btn = document.getElementById("btn-action");
     const statusEl = document.getElementById("call-status");
+    if (incomingCallPending) {
+        try {
+            // Отправляем сигнал, чтобы звонящий начал создавать оффер
+            signalingSocket.send(JSON.stringify({
+                type: "accept_call",
+                target: currentCallTarget
+            }));
 
+            // Готовимся к звонку
+            if (!localStream) await setupAudio();
+            if (!pc) await createPeerConnection();
+
+            incomingCallPending = false;
+            awaitingOffer = true;
+
+            btn.innerText = "CONNECTING...";
+            btn.className = "btn-large btn-blue";
+            btn.disabled = true;   // пока не получим оффер
+            statusEl.innerText = "WAITING FOR OFFER";
+            statusEl.style.color = "#aaa";
+        } catch (err) {
+            console.error(err);
+            statusEl.innerText = "ERROR";
+            stopCall();
+        }
+        return;
+    }
+    if (pendingOffer) {
+        console.log("[Action] Answering incoming call...");
+        try {
+            if (!localStream) await setupAudio();
+            if (!pc) await createPeerConnection();
+            // 1. Принимаем данные звонящего
+            await pc.setRemoteDescription(
+                new RTCSessionDescription({ type: "offer", sdp: pendingOffer }),
+            );
+
+            // 2. Создаем ответ
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            // 3. Отправляем ответ серверу
+            //странная отправка ответа не пойму зачем
+            signalingSocket.send(JSON.stringify({
+                type: "accept_call",
+                target: currentCallTarget, // тот, кто звонил
+                sdp: answer.sdp
+            }));
+
+            // 4. Обновляем UI: мы теперь в разговоре
+            pendingOffer = null; // Сбрасываем флаг входящего
+            awaitingOffer = false;
+            isCalling = true; // Включаем флаг активного звонка
+
+            btn.innerText = "END CALL";
+            btn.className = "btn-large btn-red"; // Красная для сброса
+            btn.disabled = false;
+            statusEl.innerText = "CONNECTED";
+            statusEl.style.color = "#4aff4a";
+
+            startTimer();
+        } catch (err) {
+            console.error("Error answering call:", err);
+            statusEl.innerText = "ANSWER FAILED";
+            stopCall();
+        }
+        return; // Выходим, чтобы не идти дальше по коду
+    }
     if (!isCalling) {
         try {
+            if (!currentCallTarget) {
+                statusEl.innerText = "NO TARGET";
+                return;
+            }
             // Проверка авторизации
             const sessionData = JSON.parse(
                 localStorage.getItem("agora_session") || "{}",
@@ -388,23 +692,15 @@ async function toggleCallAction() {
             // 2. Получаем микрофон с улучшенными настройками
             await setupAudio(); // Используем существующую функцию
 
-            // 3. Подключаем сигналинг
-            const myName = sessionData.role || "guest";
-            const targetName = moduleTitle.innerText;
-            const roomId = getRoomId(myName, targetName);
+            await createPeerConnection();
 
-            await initSignaling(roomId);
+            signalingSocket.send(JSON.stringify(
+                { type: "call_request", target: currentCallTarget },
+            ));
 
-            // 4. Создаем PeerConnection
-            await createPeerConnection(roomId);
-
-            // 5. Если мы инициатор - создаем оффер
-            // (логика "кто инициатор" должна быть в initSignaling)
-
-            isCalling = true;
-            btn.innerText = "END CALL";
+            isCalling = true; // вот этот параметр тут нужет?
             btn.className = "btn-large btn-red"; // Лучше менять класс, чем style
-            statusEl.innerText = "CONNECTED";
+            statusEl.innerText = "CONNECTION";
             startTimer();
         } catch (err) {
             console.error("call error", err);
@@ -412,7 +708,8 @@ async function toggleCallAction() {
                 ? "MIC ACCESS DENIED"
                 : "CONNECTION FAILED";
             statusEl.style.color = "#ff4a4a";
-            stopCall();
+            //stopCall();
+            return;
         }
     } else {
         // ЗАВЕРШИТЬ ЗВОНОК
@@ -479,182 +776,249 @@ function getRoomId(userA, userB) {
     return [userA, userB].sort().join("_");
 }
 
-function initSignaling(roomId) {
-    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+//function initSignaling(roomId) {
+//    return new Promise((resolve, reject) => {
+//        const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+//        signalingSocket = new WebSocket(
+//            `${wsProtocol}://${window.location.host}/ws/${roomId}`,
+//        );
+//        signalingSocket.onopen = () => {
+//            console.log("[Signal] Connected to room:", roomId);
+//            resolve();
+//        }; // просто сообщение в консоль для отслеживания
+//        signalingSocket.onerror = (err) => {
+//            console.error("[Signal] SOCKET ERROR", err);
+//            reject(err);
+//        };
+//
+//        signalingSocket.onmessage = async (event) => {
+//            const message = JSON.parse(event.data);
+//            await handleSignalingMessage(message);
+//        }; // обработчик сообщений от питона
+//
+//        signalingSocket.onclose = (event) => console.log("disconnected");
+//        // обработчик события обрыва с переподключением можно вывести на экран
+//    });
+//}
+// Функция подключения сигналинга
+function connectSignaling(token) {
+    const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
     signalingSocket = new WebSocket(
-        `${wsProtocol}://${window.location.host}/ws/${roomId}`,
+        `${wsProtocol}://${location.host}/ws?token=${
+            encodeURIComponent(token)
+        }`,
     );
+
+    signalingSocket.onopen = () => {
+        console.log("[Signal] Connected as", token);
+    };
 
     signalingSocket.onmessage = async (event) => {
         const message = JSON.parse(event.data);
-        handleSignalingMessage(message);
+        await handleSignalingMessage(message);
+    };
+
+    signalingSocket.onclose = (event) => {
+        console.log("[Signal] Disconnected", event.reason);
+        // Если сессия ещё валидна, можно попробовать переподключиться через таймаут
+    };
+
+    signalingSocket.onerror = (err) => {
+        console.error("[Signal] Error", err);
     };
 }
-async function createPeerConnection(roomId) {
-    // Используем iceConfig, который мы получили ранее из /ice-servers
-    try {
-        // Используем ваше имя переменной pc, но добавляем обработку ошибок
-        pc = new RTCPeerConnection({
-            iceServers: iceConfig || [{ urls: "stun:stun.l.google.com:19302" }],
-        });
+async function createPeerConnection() {
+    pc = new RTCPeerConnection({
+        iceServers: iceConfig || [{ urls: "stun:stun.l.google.com:19302" }],
+    });
 
-        // === ЛУЧШЕЕ ИЗ ПРЕДЛОЖЕННОЙ ФУНКЦИИ ===
-        // 1. Обработка ICE кандидатов (ваш код хорош)
-        pc.onicecandidate = (event) => {
-            if (
-                event.candidate &&
-                signalingSocket?.readyState === WebSocket.OPEN
-            ) {
-                signalingSocket.send(JSON.stringify({
-                    type: "candidate",
-                    candidate: event.candidate,
-                }));
-            }
-        };
-
-        // 2. Обработка ICE состояния (ДОБАВЛЕНО из предложенного подхода)
-        pc.oniceconnectionstatechange = () => {
-            console.log("ICE state:", pc.iceConnectionState);
-
-            if (
-                pc.iceConnectionState === "disconnected" ||
-                pc.iceConnectionState === "failed"
-            ) {
-                console.warn("ICE connection failed, attempting restart...");
-                // Можно добавить логику переподключения
-            }
-        };
-
-        // 3. Обработка входящего потока (УЛУЧШЕННАЯ версия)
-        pc.ontrack = (event) => {
-            console.log("Получен удаленный аудиопоток");
-            const remoteStream = event.streams[0];
-
-            // === ЛУЧШЕЕ ИЗ ПРЕДЛОЖЕННОЙ ФУНКЦИИ ===
-            // Создаем и сохраняем Audio элемент
-            if (remoteAudioElement) {
-                remoteAudioElement.srcObject = null;
-            }
-
-            remoteAudioElement = new Audio();
-            remoteAudioElement.srcObject = remoteStream;
-            remoteAudioElement.autoplay = true;
-
-            // Браузеры требуют взаимодействия пользователя
-            remoteAudioElement.play().catch((e) => {
-                console.log(
-                    "Автовоспроизведение заблокировано, требуется клик",
-                    e,
-                );
-                // Можно добавить кнопку "Разрешить звук"
-            });
-
-            // === ИСПРАВЛЕННАЯ ВИЗУАЛИЗАЦИЯ ===
-            if (audioContext && audioContext.state !== "closed") {
-                try {
-                    // Правильное создание источника из потока
-                    const remoteSource = audioContext.createMediaStreamSource(
-                        remoteStream,
-                    );
-
-                    remoteAnalyser = audioContext.createAnalyser();
-                    remoteAnalyser.fftSize = 256;
-                    remoteAnalyser.smoothingTimeConstant = 0.8;
-
-                    remoteSource.connect(remoteAnalyser);
-
-                    remoteDataArray = new Uint8Array(
-                        remoteAnalyser.frequencyBinCount,
-                    );
-
-                    console.log("Визуализация удаленного аудио настроена");
-                } catch (err) {
-                    console.error("Ошибка настройки визуализации:", err);
-                }
-            }
-        };
-
-        // 4. Обработка завершения ICE сборки (ДОБАВЛЕНО)
-        pc.onicegatheringstatechange = () => {
-            if (pc.iceGatheringState === "complete") {
-                console.log("ICE gathering complete");
-            }
-        };
-
-        // 5. Добавление локальных треков (ваш код хорош, но с проверкой)
-        if (localStream) {
-            localStream.getTracks().forEach((track) => {
-                try {
-                    pc.addTrack(track, localStream);
-                } catch (err) {
-                    console.error("Ошибка добавления трека:", err);
-                }
-            });
-        } else {
-            console.warn(
-                "Локальный поток не найден при создании PeerConnection",
-            );
+    // 1. Отправляем свои ICE кандидаты, когда они находятся
+    pc.onicecandidate = (event) => {
+        if (event.candidate && signalingSocket?.readyState === WebSocket.OPEN) {
+            signalingSocket.send(JSON.stringify({
+                type: "candidate",
+                target: currentCallTarget,
+                candidate: event.candidate,
+            }));
         }
+    };
 
-        console.log("PeerConnection создан успешно");
-        return pc;
-    } catch (error) {
-        console.error("Ошибка создания PeerConnection:", error);
-        throw error;
+    // 2. Обработка входящего потока (звук собеседника)
+    pc.ontrack = (event) => {
+        console.log("Remote track received");
+        // Используем ваш код для воспроизведения
+        if (remoteAudioElement) remoteAudioElement.srcObject = null;
+        remoteAudioElement = new Audio();
+        remoteAudioElement.srcObject = event.streams[0];
+        remoteAudioElement.autoplay = true;
+        remoteAudioElement.play().catch((e) =>
+            console.log("Autoplay blocked", e)
+        );
+
+        // Визуализация (если нужно)
+        if (audioContext && audioContext.state !== "closed") {
+            const source = audioContext.createMediaStreamSource(
+                event.streams[0],
+            );
+            remoteAnalyser = audioContext.createAnalyser();
+            remoteAnalyser.fftSize = 256;
+            source.connect(remoteAnalyser);
+            remoteDataArray = new Uint8Array(remoteAnalyser.frequencyBinCount);
+        }
+    };
+
+    // 3. Добавляем свой микрофон в соединение
+    if (localStream) {
+        localStream.getTracks().forEach((track) =>
+            pc.addTrack(track, localStream)
+        );
     }
+
+    console.log("PeerConnection initialized");
 }
 async function handleSignalingMessage(message) {
     switch (message.type) {
         case "start_offer": {
-            // Сервер говорит, что мы - "вызывающий". Создаем оффер.
-            await createPeerConnection();
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            signalingSocket.send(
-                JSON.stringify({ type: "offer", sdp: offer.sdp }),
-            );
+            // Сервер сказал: "Вы первый, начинайте звонок"
+            console.log("[Signal] Creating Offer...");
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                signalingSocket.send(
+                    JSON.stringify({
+                        type: "offer",
+                        target: currentCallTarget,
+                        sdp: offer.sdp,
+                    }),
+                );
+            } catch (e) {
+                console.error("Offer error", e);
+            }
             break;
         }
+        case "incoming_call":
+            // Входящий звонок: показываем UI, сохраняем pendingOffer = true
+            console.log("[Signal] Incoming call from", message.from);
+            currentCallTarget = message.from; // от кого звонок
+            // Отображаем интерфейс звонка с кнопкой ANSWER
+            renderCallInterfaceFromIncoming(message.from); // см. ниже
+            break;
 
         case "offer": {
-            // Мы получили вызов. Создаем ответ (answer).
-            await createPeerConnection();
-            await pc.setRemoteDescription(
-                new RTCSessionDescription({ type: "offer", sdp: message.sdp }),
-            );
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            signalingSocket.send(
-                JSON.stringify({ type: "answer", sdp: answer.sdp }),
-            );
+            console.log("[Signal] Offer received");
+            if (awaitingOffer) {
+                // Мы уже нажали ANSWER и ждём оффер – отвечаем автоматически
+                pendingOffer = message.sdp;      // временно сохраним для единообразного ответа
+                // Вызываем тот же код, что и в ветке pendingOffer, но без клика
+                try {
+                    await pc.setRemoteDescription(
+                        new RTCSessionDescription({ type: "offer", sdp: pendingOffer })
+                    );
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    signalingSocket.send(JSON.stringify({
+                        type: "answer",
+                        target: currentCallTarget,
+                        sdp: answer.sdp
+                    }));
+                    pendingOffer = null;
+                    awaitingOffer = false;
+                    isCalling = true;
+                    const btn = document.getElementById("btn-action");
+                    if (btn) {
+                        btn.innerText = "END CALL";
+                        btn.className = "btn-large btn-red";
+                        btn.disabled = false;
+                    }
+                    const statusEl = document.getElementById("call-status");
+                    if (statusEl) {
+                        statusEl.innerText = "CONNECTED";
+                        statusEl.style.color = "#4aff4a";
+                    }
+                    startTimer();
+                } catch (e) {
+                    console.error("Auto-answer failed", e);
+                    stopCall();
+                }
+            } else {
+                // Обычное ожидание – пользователь ещё не нажал ANSWER
+                pendingOffer = message.sdp;
+                const statusEl = document.getElementById("call-status");
+                if (statusEl) {
+                    statusEl.innerText = "INCOMING CALL";
+                    statusEl.style.color = "#ff9900";
+                    statusEl.classList.add("blink");
+                }
+                const btn = document.getElementById("btn-action");
+                if (btn) {
+                    btn.innerText = "ANSWER";
+                    btn.className = "btn-large btn-green";
+                    btn.disabled = false;
+                }
+            }
             break;
         }
 
-        case "answer":
-            // Наш оффер приняли. Устанавливаем удаленное описание.
+        case "answer": {
+            // Наш Offer приняли.
+            console.log("[Signal] Received Answer");
             await pc.setRemoteDescription(
                 new RTCSessionDescription({ type: "answer", sdp: message.sdp }),
             );
+            document.getElementById("call-status").innerText = "CONNECTED";
+            startTimer();
             break;
+        }
 
-        case "candidate":
-            // Получили данные о сетевом пути собеседника.
+        case "candidate": {
+            // Настроили сетевой маршрут
             try {
                 await pc.addIceCandidate(
                     new RTCIceCandidate(message.candidate),
                 );
             } catch (e) {
-                console.error("Ошибка добавления ICE кандидата", e);
+                console.error("ICE Candidate Error", e);
             }
             break;
+        }
 
         case "peer_disconnected":
-            // Собеседник отключился — сбрасываем звонок.
             stopCall();
+            alert("Peer disconnected");
             break;
     }
 }
+function renderCallInterfaceFromIncoming(callerName) {
+    // Используем тот же UI, что и для исходящего, но с кнопкой ANSWER
+    initCallInterface(callerName);
+    incomingCallPending = true;
+    awaitingOffer = false;
+    pendingOffer = null;
+
+    const btn = document.getElementById("btn-action");
+    if (btn) {
+        btn.innerText = "ANSWER";
+        btn.className = "btn-large btn-green";
+    }
+    const statusEl = document.getElementById("call-status");
+    if (statusEl) {
+        statusEl.innerText = "INCOMING CALL";
+        statusEl.style.color = "#ff9900";
+    }
+    // Запускаем анимацию
+    startWaveAnimation();
+}
+
 function stopCall() {
+    if (signalingSocket && currentCallTarget) {
+        signalingSocket.send(JSON.stringify({
+            type: "call_end",
+            target: currentCallTarget,
+        }));
+    }
+    pendingOffer = null;
+    incomingCallPending = false;
+    awaitingOffer = false;
     if (pc) {
         pc.close();
         pc = null;
@@ -663,10 +1027,10 @@ function stopCall() {
         localStream.getTracks().forEach((track) => track.stop());
         localStream = null;
     }
-    if (signalingSocket) {
-        signalingSocket.close();
-        signalingSocket = null;
-    }
+    //if (signalingSocket) {
+    //    signalingSocket.close();
+    //    signalingSocket = null;
+    //}
     if (remoteAudioElement) {
         remoteAudioElement.pause();
         remoteAudioElement.srcObject = null;
@@ -826,6 +1190,110 @@ self.addEventListener("appinstalled", () => {
 });
 // ========== ИНИЦИАЛИЗАЦИЯ И ОБРАБОТЧИКИ СОБЫТИЙ ==========
 window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
+window.addEventListener("load", () => {
+    const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
+    if (session.token) {
+        connectSignaling(session.token);
+    }
+});
+const CACHE_NAME = "agora-hub-v7";
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./script1.js",
+  "./style1.css",
+  "./logo.png",
+  "./manifest.json",
+];
+
+// 1. При установке кэшируем основные файлы (App Shell)
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll(ASSETS);
+    }),
+  );
+  self.skipWaiting();
+});
+// удаление старых кешей
+self.addEventListener("activate", (event) => {
+  const cacheWhitelist = [CACHE_NAME];
+
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          // Если имя кеша не совпадает с текущим (например, agora-hub-v2), удаляем его
+          if (cacheWhitelist.indexOf(cacheName) === -1) {
+            console.log("[SW] Удаляем старый кеш:", cacheName);
+            return caches.delete(cacheName);
+          }
+        }),
+      );
+    }),
+  );
+  // Немедленно контролировать все открытые страницы
+  return self.clients.claim();
+});
+
+self.addEventListener("fetch", (event) => {
+  // Игнорируем не-GET запросы
+  if (event.request.method !== "GET") return;
+
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      // 1. Если есть в кэше — отдаем сразу (самый быстрый путь)
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
+      // 2. Если нет в кеше, идем в сеть
+      return fetch(event.request).then((networkResponse) => {
+        // Кэшируем новые ресурсы на лету
+        // Проверяем, что ответ валидный
+        if (
+          !networkResponse || networkResponse.status !== 200 ||
+          networkResponse.type !== "basic"
+        ) {
+          return networkResponse;
+        }
+
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
+        });
+
+        return networkResponse;
+      });
+    }),
+  );
+});
+{
+  "name": "AGORA HUB",
+  "short_name": "AGORA",
+  "description": "Децентрализованный хаб для связи и обмена",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "communication"],
+  "lang": "ru"
+}
         body, html {
             margin: 0;
             padding: 0;
@@ -1265,222 +1733,3 @@ window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-{
-  "name": "AGORA HUB",
-  "short_name": "AGORA",
-  "description": "Децентрализованный хаб для связи и обмена",
-  "start_url": "./",
-  "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#0a0a0a",
-  "orientation": "portrait-primary",
-  "icons": [
-    {
-      "src": "./icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "./icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ],
-  "categories": ["productivity", "communication"],
-  "lang": "ru"
-}
-const CACHE_NAME = "agora-hub-v7";
-const ASSETS = [
-  "./",
-  "./index.html",
-  "./script1.js",
-  "./style1.css",
-  "./logo.png",
-  "./manifest.json",
-];
-
-// 1. При установке кэшируем основные файлы (App Shell)
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
-    }),
-  );
-  self.skipWaiting();
-});
-// удаление старых кешей
-self.addEventListener("activate", (event) => {
-  const cacheWhitelist = [CACHE_NAME];
-
-  event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cacheName) => {
-          // Если имя кеша не совпадает с текущим (например, agora-hub-v2), удаляем его
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
-            console.log("[SW] Удаляем старый кеш:", cacheName);
-            return caches.delete(cacheName);
-          }
-        }),
-      );
-    }),
-  );
-  // Немедленно контролировать все открытые страницы
-  return self.clients.claim();
-});
-
-self.addEventListener("fetch", (event) => {
-  // Игнорируем не-GET запросы
-  if (event.request.method !== "GET") return;
-
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      // 1. Если есть в кэше — отдаем сразу (самый быстрый путь)
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      // 2. Если нет в кеше, идем в сеть
-      return fetch(event.request).then((networkResponse) => {
-        // Кэшируем новые ресурсы на лету
-        // Проверяем, что ответ валидный
-        if (
-          !networkResponse || networkResponse.status !== 200 ||
-          networkResponse.type !== "basic"
-        ) {
-          return networkResponse;
-        }
-
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
-
-        return networkResponse;
-      });
-    }),
-  );
-});
-import os
-import json
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-load_dotenv()
-
-app = FastAPI()
-
-# Разрешаем корс 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins = ['*'],
-    allow_methods = ['*'],
-    allow_headers = ['*'],
-)
-
-class AuthRequest(BaseModel):
-    token: str
-
-# Менеджер подключений с комнатами
-class ConnectionManager:
-    def __init__(self):
-        self.rooms: dict[str, list[WebSocket]] = {}
-
-    async def connect(self, room_id: str, websocket: WebSocket):
-        await websocket.accept()
-        if room_id not in self.rooms:
-            self.rooms[room_id] = []
-        self.rooms[room_id].append(websocket)
-
-    def disconnect(self, room_id: str, websocket: WebSocket):
-        # proverka komnaty
-        if room_id in self.rooms:
-            try:
-                self.rooms[room_id].remove(websocket)
-            except ValueError:
-                pass
-            if not self.rooms[room_id]:
-                del self.rooms[room_id]
-
-    async def broadcast_json(self, room_id: str, sender: WebSocket, message: dict):
-        for connection in self.rooms.get(room_id, []):
-            if connection != sender:
-                await connection.send_json(message)
-
-manager = ConnectionManager()
-
-# Функция получения конфига TURN для конкретной роли
-def get_ice_servers(role: str):
-    # Приводим роль к верхнему регистру для поиска в ENV (например, GHOST)
-    env_prefix = role.split()[0].upper() # "sarah connor" -> "SARAH"
-    
-    username = os.getenv(f"{env_prefix}_USER", "default_user")
-    credential = os.getenv(f"{env_prefix}_PASS", "default_pass")
-    domain = os.getenv("TURN")
-    
-    return [
-        {
-            "urls": [
-                f"stun:{domain}:80",
-                f"turn:{domain}:80",
-                f"turn:{domain}:443",
-                f"turn:{domain}:443?transport=tcp"
-            ],
-            "username": username,
-            "credential": credential
-        }
-    ]
-
-@app.post("/auth/login")
-async def login(data: AuthRequest):
-    token = data.token.lower().strip()
-    
-    users = json.loads(os.getenv("USERS_JSON","{}"))
-    user = users.get(token)
-    contacts = json.loads(os.getenv("ACCESS_MATRIX","{}"))
-    addressee = contacts.get(token)
-        
-    if not user:
-        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
-            
-    return {
-        "status": "success",
-        "contacts": addressee,
-        "role": user["role"],
-        "display_name": user["display_name"]
-    }
-
-# Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
-@app.get("/ice-servers")
-async def get_ice_config(role: str="guest"):
-    try:
-        servers = get_ice_servers(role)
-        return {"iceServers": servers}
-    except Exception as e:  # обработаем случай ошибки чтения файла
-        print(f"error gen {e}")
-        return {"urls":[{"urls":"stun:stun.l.google.com:19302"}]}
-
-# WebSocket endpoint для сигнализации
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await manager.connect(room_id, websocket)
-    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
-    try:    
-        if len(manager.rooms[room_id]) == 2:
-            first = manager.rooms[room_id][0]
-        # Первый клиент начинает offer по сигналу
-            await first.send_json({"type": "start_offer"})
-        while True:
-            data = await websocket.receive_json()
-            await manager.broadcast_json(room_id, websocket, data)
-    except WebSocketDisconnect:
-        manager.disconnect(room_id, websocket)
-        await manager.broadcast_json(room_id, websocket, {"type":"peer_disconnected"})
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
