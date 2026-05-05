@@ -94,6 +94,8 @@ def get_ice_servers(role: str):
     domain = os.getenv("TURN")
     
     return [
+        { "urls": f"stun:stun.relay.metered.ca:80"
+        },
         {
             "urls": [
                 f"stun:{domain}:80",
@@ -101,6 +103,11 @@ def get_ice_servers(role: str):
                 f"turn:{domain}:443",
                 f"turn:{domain}:443?transport=tcp"
             ],
+            "username": username,
+            "credential": credential
+        },
+        {
+            "urls":f"turns:{domain}:443?transport=tcp",
             "username": username,
             "credential": credential
         }
