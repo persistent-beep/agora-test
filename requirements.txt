@@ -1,5 +1,5 @@
 fastapi
-uvicorn[standart]
+uvicorn[standard]
 python-dotenv
 pydantic
 
