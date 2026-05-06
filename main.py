@@ -25,34 +25,6 @@ app.add_middleware(
 class AuthRequest(BaseModel):
     token: str
 
-## Менеджер подключений с комнатами
-#class ConnectionManager:
-#    def __init__(self):
-#        self.rooms: dict[str, list[WebSocket]] = {}
-#
-#    async def connect(self, room_id: str, websocket: WebSocket):
-#        await websocket.accept()
-#        if room_id not in self.rooms:
-#            self.rooms[room_id] = []
-#        self.rooms[room_id].append(websocket)
-#
-#    def disconnect(self, room_id: str, websocket: WebSocket):
-#        # proverka komnaty
-#        if room_id in self.rooms:
-#            try:
-#                self.rooms[room_id].remove(websocket)
-#            except ValueError:
-#                pass
-#            if not self.rooms[room_id]:
-#                del self.rooms[room_id]
-#
-#    async def broadcast_json(self, room_id: str, sender: WebSocket, message: dict):
-#        for connection in self.rooms.get(room_id, []):
-#            if connection != sender:
-#                await connection.send_json(message)
-
-#manager = ConnectionManager()
-# вместо коннектинг используем юзер менеджер ===================================================
 
 # Заменяем старый ConnectionManager на UserManager
 class UserManager:
@@ -86,8 +58,8 @@ def get_user_from_token(token: str) -> dict | None:
 
 # Функция получения конфига TURN для конкретной роли
 def get_ice_servers(role: str):
-    # Приводим роль к верхнему регистру для поиска в ENV (например, GHOST)
-    env_prefix = role.split()[0].upper() # "sarah connor" -> "SARAH"
+    # Приводим роль к верхнему регистру для поиска в ENV 
+    env_prefix = role.split()[0].upper() 
     
     username = os.getenv(f"{env_prefix}_USER", "default_user")
     credential = os.getenv(f"{env_prefix}_PASS", "default_pass")
