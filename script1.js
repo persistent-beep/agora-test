@@ -66,6 +66,11 @@ function handleLogoClick() {
         toHome();
     } else {
         // Из любого места возвращаемся в меню
+        if (
+            currentState === "CONTENT" && (incomingCallPending || awaitingOffer)
+        ) {
+            cancelIncomingCall();
+        }
         stopCallSimulation(); // Остановить звонок если он идет
         if (token) toMenu();
         else toHome();
@@ -363,10 +368,12 @@ async function toggleCallAction() {
                 { type: "call_request", target: currentCallTarget },
             ));
 
-            isCalling = true; // вот этот параметр тут нужет?
-            btn.className = "btn-large btn-red"; // Лучше менять класс, чем style
+            btn.innerText = "CALLING>>>";
+            btn.className = "btn-large btn-blue"; // Лучше менять класс, чем style
+            btn.disabled = true;
+
             statusEl.innerText = "CONNECTION";
-            startTimer();
+            //startTimer();
         } catch (err) {
             console.error("call error", err);
             statusEl.innerText = err.message.includes("microphone")
@@ -374,14 +381,21 @@ async function toggleCallAction() {
                 : "CONNECTION FAILED";
             statusEl.style.color = "#ff4a4a";
             //stopCall();
-            return;
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach((t) => t.stop());
+                localStream = null;
+            }
         }
-    } else {
-        // ЗАВЕРШИТЬ ЗВОНОК
-        stopCall();
-        // Возврат к списку контактов через секунду
-        setTimeout(renderConnectModule, 1000);
+        return;
     }
+    // ЗАВЕРШИТЬ ЗВОНОК
+    stopCall();
+    // Возврат к списку контактов через секунду
+    setTimeout(renderConnectModule, 1000);
 }
 
 function endCall() {
@@ -554,6 +568,8 @@ async function handleSignalingMessage(message) {
                         sdp: offer.sdp,
                     }),
                 );
+                const statusEl = document.getElementById("call-status");
+                if (statusEl) statusEl.innerText = "RINGING>>>";
             } catch (e) {
                 console.error("Offer error", e);
             }
@@ -631,6 +647,14 @@ async function handleSignalingMessage(message) {
             await pc.setRemoteDescription(
                 new RTCSessionDescription({ type: "answer", sdp: message.sdp }),
             );
+            isCalling = true;
+            const btn = document.getElementById("btn-action");
+            if (btn) {
+                btn.innerText = "END CALL";
+                btn.className = "btn-large btn-red";
+                btn.disabled = false;
+            }
+
             document.getElementById("call-status").innerText = "CONNECTED";
             startTimer();
             break;
@@ -705,6 +729,27 @@ function stopCall() {
     // Возвращаем UI в состояние ожидания
     stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
+}
+function cancelIncomingCall() {
+    if (incomingCallPending || awaitingOffer) {
+        if (signalingSocket && currentCallTarget) {
+            signalingSocket.send(
+                JSON.stringify({ type: "call_end", target: currentCallTarget }),
+            );
+        }
+        incomingCallPending = false;
+        awaitingOffer = false;
+        pendingOffer = null;
+        // Закрыть pc и стримы, если были созданы (для автоответа)
+        if (pc) {
+            pc.close();
+            pc = null;
+        }
+        if (localStream) {
+            localStream.getTracks().forEach((t) => t.stop());
+            localStream = null;
+        }
+    }
 }
 // --- ТАЙМЕР ---
 function startTimer() {

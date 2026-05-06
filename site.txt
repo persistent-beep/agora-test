@@ -207,12 +207,11 @@ def get_ice_servers(role: str):
     domain = os.getenv("TURN")
     
     return [
-        { "urls": f"stun:stun.relay.metered.ca:80"
-        },
+        { "urls": f"stun:stun.relay.metered.ca:80"},
         {
             "urls": [
-                f"stun:{domain}:80",
                 f"turn:{domain}:80",
+                f"turn:{domain}:80?transport=tcp",
                 f"turn:{domain}:443",
                 f"turn:{domain}:443?transport=tcp"
             ],
@@ -949,7 +948,7 @@ async function handleAuthSubmit() {
 
     try {
         const response = await fetch(
-            "${API_URL}/auth/login",
+            `${API_URL}/auth/login`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -965,6 +964,7 @@ async function handleAuthSubmit() {
                 role: data.role,
                 userRole: data.role,
             };
+            userRole = data.role;
             localStorage.setItem("agora_session", JSON.stringify(session));
             if (signalingSocket) signalingSocket.close();
             connectSignaling(tokenValue);
