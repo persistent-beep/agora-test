@@ -11,6 +11,7 @@ let isMuted = false;
 let currentSource = "HEADPHONES"; // или 'SPEAKERS'
 let seconds = 0;
 let callTemplateCache = null;
+let isTerminating = false;
 
 // Объект состояний WebRTC
 let pc = null;
@@ -234,6 +235,7 @@ function renderConnectModule() {
 // ========== МОДУЛЬ ЗВОНКОВ И АУДИО ИНТЕРФЕЙС ==========
 //  Инициализация интерфейса звонка
 function initCallInterface(name) {
+    isTerminating = false;
     currentCallTarget = name.trim();
     moduleTitle.innerText = name; // Имя контакта в заголовок
 
@@ -314,7 +316,7 @@ async function toggleCallAction() {
             // 3. Отправляем ответ серверу
             //странная отправка ответа не пойму зачем
             signalingSocket.send(JSON.stringify({
-                type: "accept_call",
+                type: "answer",
                 target: currentCallTarget, // тот, кто звонил
                 sdp: answer.sdp,
             }));
@@ -700,6 +702,8 @@ function renderCallInterfaceFromIncoming(callerName) {
 }
 
 function stopCall() {
+    if (isTerminating) return;
+    isTerminating = true;
     if (signalingSocket && currentCallTarget) {
         signalingSocket.send(JSON.stringify({
             type: "call_end",
