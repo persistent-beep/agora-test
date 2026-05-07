@@ -408,11 +408,15 @@ function endCall() {
     const btn = document.getElementById("btn-action");
     const statusEl = document.getElementById("call-status");
 
-    btn.innerText = "CALL";
-    btn.className = "btn-large btn-green";
-    statusEl.innerText = "ENDED";
-    statusEl.style.color = "#ff4a4a";
-    statusEl.classList.remove("blink");
+    if (btn) {
+        btn.innerText = "CALL";
+        btn.className = "btn-large btn-green";
+    }
+    if (btn) {
+        statusEl.innerText = "ENDED";
+        statusEl.style.color = "#ff4a4a";
+        statusEl.classList.remove("blink");
+    }
 }
 
 function toggleMute() {
@@ -648,7 +652,6 @@ async function handleSignalingMessage(message) {
 
         case "peer_disconnected":
             stopCall();
-            alert("Peer disconnected");
             break;
     }
 }
