@@ -525,6 +525,7 @@ function connectSignaling(token) {
 async function createPeerConnection() {
     pc = new RTCPeerConnection({
         iceServers: iceConfig || [{ urls: "stun:stun.l.google.com:19302" }],
+        iceTransportPolicy: "relay",
     });
 
     // 1. Отправляем свои ICE кандидаты, когда они находятся
