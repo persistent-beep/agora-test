@@ -276,6 +276,8 @@ async function toggleCallAction() {
     if (incomingCallPending) {
         try {
             // Отправляем сигнал, чтобы звонящий начал создавать оффер
+            await fetchIceServers();
+
             signalingSocket.send(JSON.stringify({
                 type: "accept_call",
                 target: currentCallTarget,
@@ -605,6 +607,9 @@ async function handleSignalingMessage(message) {
         case "offer": {
             console.log("[Signal] Offer received");
             if (awaitingOffer) {
+                if (!iceConfig || iceConfig.length === 0) {
+                    await fetchIceServers();
+                }
                 // Мы уже нажали ANSWER и ждём оффер – отвечаем автоматически
                 pendingOffer = message.sdp; // временно сохраним для единообразного ответа
                 // Вызываем тот же код, что и в ветке pendingOffer, но без клика
@@ -702,7 +707,9 @@ function renderCallInterfaceFromIncoming(callerName) {
     incomingCallPending = true;
     awaitingOffer = false;
     pendingOffer = null;
-
+    fetchIceServers().then(() => {
+        console.log("[ICE] Servers loaded for incoming call", iceConfig);
+    });
     const btn = document.getElementById("btn-action");
     if (btn) {
         btn.innerText = "ANSWER";
