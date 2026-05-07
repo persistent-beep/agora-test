@@ -451,9 +451,50 @@ function toggleSource() {
     }
 }
 
-function activateVosklet() {
-    // Функция для кнопки VOSKLET (заглушка)
-    console.log("Vosklet activated");
+async function activateVosklet() {
+    const btn = document.getElementById("btn-vosklet");
+    const statusEl = document.getElementById("call-status");
+
+    // Если микрофон уже есть — показываем что всё ок
+    if (localStream && localStream.getAudioTracks()[0]?.enabled) {
+        btn.innerText = "MIC OK ✓";
+        btn.style.backgroundColor = "#2b9348";
+        return;
+    }
+
+    btn.innerText = "REQUESTING...";
+
+    try {
+        // Запрашиваем микрофон — браузер покажет нативный диалог
+        const testStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+        });
+
+        // Если уже идёт звонок — подменяем стрим
+        if (isCalling && pc) {
+            const newTrack = testStream.getAudioTracks()[0];
+            const sender = pc.getSenders().find((s) =>
+                s.track?.kind === "audio"
+            );
+            if (sender) await sender.replaceTrack(newTrack);
+            localStream = testStream;
+        } else {
+            // Просто проверили что микрофон работает — останавливаем тест
+            testStream.getTracks().forEach((t) => t.stop());
+        }
+
+        btn.innerText = "MIC GRANTED ✓";
+        btn.style.backgroundColor = "#2b9348";
+        if (statusEl) statusEl.innerText = "MIC READY";
+    } catch (err) {
+        btn.innerText = "MIC BLOCKED ✗";
+        btn.style.backgroundColor = "#bc2d2d";
+        if (statusEl) {
+            statusEl.innerText = "ALLOW MIC IN BROWSER";
+            statusEl.style.color = "#ff4a4a";
+        }
+        console.error("Микрофон недоступен:", err);
+    }
 }
 
 // ========== WebRTC И СИГНАЛИНГ ==========
