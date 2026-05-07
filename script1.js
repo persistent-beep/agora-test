@@ -455,12 +455,7 @@ function activateVosklet() {
 
 // ========== WebRTC И СИГНАЛИНГ ==========
 
-function getRoomId(userA, userB) {
-    return [userA, userB].sort().join("_");
-}
-
 function connectSignaling(token) {
-    const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
     signalingSocket = new WebSocket(
         `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
@@ -704,6 +699,7 @@ function stopCall() {
         remoteAudioElement = null;
     }
     // Возвращаем UI в состояние ожидания
+    endCall();
     stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
 }

@@ -314,6 +314,32 @@ app.mount("/static", StaticFiles(directory=base_path), name="static")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+{
+  "name": "AGORA HUB",
+  "short_name": "AGORA",
+  "description": "Децентрализованный хаб для связи и обмена",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "communication"],
+  "lang": "ru"
+}
 // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И СОСТОЯНИЯ ==========
 // переменные интерфейса
 let currentState = "HOME";
@@ -718,6 +744,7 @@ async function toggleCallAction() {
 }
 
 function endCall() {
+    isTerminating = false;
     isCalling = false;
     stopTimer();
     const btn = document.getElementById("btn-action");
@@ -770,12 +797,7 @@ function activateVosklet() {
 
 // ========== WebRTC И СИГНАЛИНГ ==========
 
-function getRoomId(userA, userB) {
-    return [userA, userB].sort().join("_");
-}
-
 function connectSignaling(token) {
-    const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
     signalingSocket = new WebSocket(
         `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
@@ -1019,6 +1041,7 @@ function stopCall() {
         remoteAudioElement = null;
     }
     // Возвращаем UI в состояние ожидания
+    endCall();
     stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
 }
@@ -1198,6 +1221,78 @@ window.addEventListener("load", () => {
     if (session.token) {
         connectSignaling(session.token);
     }
+});
+const CACHE_NAME = "agora-hub-v7";
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./script1.js",
+  "./style1.css",
+  "./logo.png",
+  "./manifest.json",
+];
+
+// 1. При установке кэшируем основные файлы (App Shell)
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll(ASSETS);
+    }),
+  );
+  self.skipWaiting();
+});
+// удаление старых кешей
+self.addEventListener("activate", (event) => {
+  const cacheWhitelist = [CACHE_NAME];
+
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          // Если имя кеша не совпадает с текущим (например, agora-hub-v2), удаляем его
+          if (cacheWhitelist.indexOf(cacheName) === -1) {
+            console.log("[SW] Удаляем старый кеш:", cacheName);
+            return caches.delete(cacheName);
+          }
+        }),
+      );
+    }),
+  );
+  // Немедленно контролировать все открытые страницы
+  return self.clients.claim();
+});
+
+self.addEventListener("fetch", (event) => {
+  // Игнорируем не-GET запросы
+  if (event.request.method !== "GET") return;
+
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      // 1. Если есть в кэше — отдаем сразу (самый быстрый путь)
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
+      // 2. Если нет в кеше, идем в сеть
+      return fetch(event.request).then((networkResponse) => {
+        // Кэшируем новые ресурсы на лету
+        // Проверяем, что ответ валидный
+        if (
+          !networkResponse || networkResponse.status !== 200 ||
+          networkResponse.type !== "basic"
+        ) {
+          return networkResponse;
+        }
+
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
+        });
+
+        return networkResponse;
+      });
+    }),
+  );
 });
         body, html {
             margin: 0;
@@ -1638,101 +1733,3 @@ window.addEventListener("load", () => {
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-{
-  "name": "AGORA HUB",
-  "short_name": "AGORA",
-  "description": "Децентрализованный хаб для связи и обмена",
-  "start_url": "./",
-  "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#0a0a0a",
-  "orientation": "portrait-primary",
-  "icons": [
-    {
-      "src": "./icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "./icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ],
-  "categories": ["productivity", "communication"],
-  "lang": "ru"
-}
-const CACHE_NAME = "agora-hub-v7";
-const ASSETS = [
-  "./",
-  "./index.html",
-  "./script1.js",
-  "./style1.css",
-  "./logo.png",
-  "./manifest.json",
-];
-
-// 1. При установке кэшируем основные файлы (App Shell)
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
-    }),
-  );
-  self.skipWaiting();
-});
-// удаление старых кешей
-self.addEventListener("activate", (event) => {
-  const cacheWhitelist = [CACHE_NAME];
-
-  event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cacheName) => {
-          // Если имя кеша не совпадает с текущим (например, agora-hub-v2), удаляем его
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
-            console.log("[SW] Удаляем старый кеш:", cacheName);
-            return caches.delete(cacheName);
-          }
-        }),
-      );
-    }),
-  );
-  // Немедленно контролировать все открытые страницы
-  return self.clients.claim();
-});
-
-self.addEventListener("fetch", (event) => {
-  // Игнорируем не-GET запросы
-  if (event.request.method !== "GET") return;
-
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      // 1. Если есть в кэше — отдаем сразу (самый быстрый путь)
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      // 2. Если нет в кеше, идем в сеть
-      return fetch(event.request).then((networkResponse) => {
-        // Кэшируем новые ресурсы на лету
-        // Проверяем, что ответ валидный
-        if (
-          !networkResponse || networkResponse.status !== 200 ||
-          networkResponse.type !== "basic"
-        ) {
-          return networkResponse;
-        }
-
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
-
-        return networkResponse;
-      });
-    }),
-  );
-});
