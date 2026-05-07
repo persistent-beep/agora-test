@@ -402,7 +402,6 @@ async function toggleCallAction() {
 }
 
 function endCall() {
-    isTerminating = false;
     isCalling = false;
     stopTimer();
     const btn = document.getElementById("btn-action");
@@ -705,6 +704,9 @@ function stopCall() {
     endCall();
     stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
+    setTimeout(() => {
+        isTerminating = false;
+    }, 500);
 }
 function cancelIncomingCall() {
     if (incomingCallPending || awaitingOffer) {
