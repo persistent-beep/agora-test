@@ -1,25 +1,28 @@
 // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И СОСТОЯНИЯ ==========
+// переменные интерфейса
 let currentState = "HOME";
-let currentCallTarget = null;
-let callTemplateCache = null;
+let currentCallTarget = null; // роль того, с кем идёт звонок
+let callTemplateCache = null; // хранение кэша для шаблона ui звонка
 
-let callTimerInterval;
-let animationFrameId;
-let isMuted = false;
-let currentSource = "HEADPHONES";
-let seconds = 0;
+// Переменные для звонка
+let callTimerInterval; // это вроде для остановки таймера в фоне
+let animationFrameId; // this for stoping animaton in background
+let isMuted = false; // для анимации волны пока не работает
+let currentSource = "HEADPHONES"; // или 'SPEAKERS'     это нихуя не работает
+let seconds = 0; // это я так понимаю для таймера
 
 let isTerminating = false;
 let isCalling = false;
-let incomingCallPending = false;
-let awaitingOffer = false;
+let incomingCallPending = false; // входящий звонок, ждём нажатия ANSWERi это переключатель режимов работы кнопки CALL
+let awaitingOffer = false; //  это флаг состояния "ждем техническое предложение (SDP offer) от собеседника"
 
+// Объект состояний WebRTC
 let pc = null;
 let localStream = null;
 let signalingSocket = null;
 let iceConfig = null;
-let pendingOffer = null;
-
+let pendingOffer = null; // хранилище spd предложения до ответа
+//Аудио
 let audioContext = null;
 let analyser = null;
 let dataArray = null;
@@ -34,11 +37,12 @@ const moduleTitle = document.getElementById("module-title");
 const moduleContent = document.getElementById("module-content");
 
 const BACKEND_URL = "https://agora-service.onrender.com";
-const API_URL = "https://agora-service.onrender.com";
-let userRole = "guest";
+const API_URL = "https://agora-service.onrender.com"; // Адрес твоего Python сервера
+let userRole = "guest"; // Будет обновляться при логине
 const WS_URL = BACKEND_URL.replace(/^http/, "ws");
 
-// ========== СЛУЖЕБНЫЕ ФУНКЦИИ ==========
+// ========== СЛУЖЕБНЫЕ/ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
 function debounce(func, delay) {
     let timeout;
     return (...args) => {
@@ -47,28 +51,29 @@ function debounce(func, delay) {
     };
 }
 
-// ========== ОСНОВНАЯ НАВИГАЦИЯ ==========
+// ========== ОСНОВНАЯ НАВИГАЦИЯ И УПРАВЛЕНИЕ СОСТОЯНИЕМ ==========
+// --- ЛОГИКА НАВИГАЦИИ --- ЛОГИКА ПОВЕДЕНИЯ ЛОГОТИПА ---
+
 function handleLogoClick() {
     const token = localStorage.getItem("agora_session");
 
     if (currentState === "HOME") {
         if (token) toMenu();
-        else renderAuthModule();
+        else {
+            renderAuthModule();
+        }
     } else if (currentState === "MENU") {
         toHome();
     } else if (currentState === "AUTH") {
         toHome();
     } else {
-        // Из любого места возвращаемся в меню, корректно завершая звонок
-        if (currentState === "CONTENT") {
-            if (incomingCallPending || awaitingOffer) {
-                cancelIncomingCall();
-            }
-            if (isCalling) {
-                stopCall();
-            }
-            stopCallSimulation();
+        // Из любого места возвращаемся в меню
+        if (
+            currentState === "CONTENT" && (incomingCallPending || awaitingOffer)
+        ) {
+            cancelIncomingCall();
         }
+        stopCallSimulation(); // Остановить звонок если он идет
         if (token) toMenu();
         else toHome();
     }
@@ -79,6 +84,7 @@ function toMenu() {
         toHome();
         return;
     }
+
     currentState = "MENU";
     logo.className = "logo-side";
     menu.classList.add("menu-visible");
@@ -91,12 +97,8 @@ function toHome() {
     menu.classList.remove("menu-visible");
     contentArea.classList.remove("content-visible");
 }
-
+// --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ МОДУЛЕЙ ---
 function openModule(title, text) {
-    // При переходе в другой модуль завершаем активный звонок
-    if (currentState === "CONTENT" && isCalling) {
-        stopCall();
-    }
     currentState = "CONTENT";
     menu.classList.remove("menu-visible");
     moduleTitle.innerText = title;
@@ -112,34 +114,45 @@ function openModule(title, text) {
     }, 300);
 }
 
-// ========== АВТОРИЗАЦИЯ ==========
+// ========== АВТОРИЗАЦИЯ И АУТЕНТИФИКАЦИЯ ==========
+// отрисовка модуля авторизации
 function renderAuthModule() {
     currentState = "AUTH";
-    logo.className = "logo-side";
-    moduleTitle.innerText = "";
+    logo.className = "logo-side"; // logo slide left
+    moduleTitle.innerText = ""; // cleance of header
+
     const template = document.getElementById("template-auth");
     moduleContent.innerHTML = template.innerHTML;
+
     setTimeout(() => {
         contentArea.classList.add("content-visible");
     }, 300);
 }
-
+// change auth button to enter
 function updateAuthBtn() {
     const input = document.getElementById("auth-token");
     const btn = document.getElementById("btn-auth-submit");
-    btn.innerText = input.value.length > 0 ? "SUBMIT" : "GUEST";
+    if (input.value.length > 0) {
+        btn.innerText = "SUBMIT";
+    } else {
+        btn.innerText = "GUEST";
+    }
 }
-
+// Заглушка для отправки (пока без Python)
 async function handleAuthSubmit() {
     const input = document.getElementById("auth-token");
-    const tokenValue = input.value || "guest";
+    const btn = document.getElementById("btn-auth-submit");
+    const tokenValue = input.value || "guest"; // если пусто - заходим как гость
 
     try {
-        const response = await fetch(`${API_URL}/auth/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: tokenValue }),
-        });
+        const response = await fetch(
+            `${API_URL}/auth/login`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: tokenValue }),
+            },
+        );
 
         if (response.ok) {
             const data = await response.json();
@@ -164,37 +177,45 @@ async function handleAuthSubmit() {
         input.placeholder = "SERVER_OFFLINE";
     }
 }
-
+// end of handle auth
+//функция логаут
 function handleLogout() {
     if (signalingSocket) signalingSocket.close();
     localStorage.removeItem("agora_session");
     location.reload();
 }
 
-// ========== МОДУЛЬ CONNECT ==========
+// --- ЛОГИКА МОДУЛЯ CONNECT ---// ========== МОДУЛЬ CONNECT И РАБОТА С КОНТАКТАМИ ==========
+// 1. Показать список контактов
+// Получение текущей роли из localStorage и отрисовка модуля
+
 function renderConnectModule() {
     currentState = "CONTENT";
     menu.classList.remove("menu-visible");
     moduleTitle.innerText = "CONNECT";
 
+    //clone template
     const template = document.getElementById("template-contacts");
     const clone = template.content.cloneNode(true);
     const listContainer = clone.getElementById("dynamic-contact-list");
+
+    // получаем данные из localstorage
     const sessionData = JSON.parse(
         localStorage.getItem("agora_session") || "{}",
     );
     const contacts = sessionData.contacts;
-
+    // проверка на null, undefiend или {}
     if (!contacts || (Array.isArray(contacts) && contacts.length === 0)) {
         const noAccess = document.createElement("div");
         noAccess.className = "placeholder";
         noAccess.style.color = "#444";
         noAccess.textContent = "NO TARGETS";
         listContainer.appendChild(noAccess);
-    } else {
+    } else { // Походу если пришло одно слово оно перестает быть массивом
         const contactsArray = Array.isArray(contacts)
             ? contacts
             : contacts.split(",");
+
         contactsArray.forEach((contactName) => {
             const btn = document.createElement("div");
             btn.className = "contact-item";
@@ -203,32 +224,38 @@ function renderConnectModule() {
             listContainer.appendChild(btn);
         });
     }
-
+    //its set up
     moduleContent.innerHTML = "";
     moduleContent.appendChild(clone);
+
     setTimeout(() => {
         contentArea.classList.add("content-visible");
     }, 300);
 }
 
-// ========== ИНТЕРФЕЙС ЗВОНКА ==========
+// ========== МОДУЛЬ ЗВОНКОВ И АУДИО ИНТЕРФЕЙС ==========
+//  Инициализация интерфейса звонка
 function initCallInterface(name) {
     isTerminating = false;
     currentCallTarget = name.trim();
-    moduleTitle.innerText = name;
+    moduleTitle.innerText = name; // Имя контакта в заголовок
 
     if (!callTemplateCache) {
+        // находим шаблон для ui
         const template = document.getElementById("template-call-ui");
         callTemplateCache = template.innerHTML;
     }
+    // Шаблон интерфейса copied
     moduleContent.innerHTML = callTemplateCache;
+    // сброс состояний анимаций
     isCalling = false;
     isMuted = false;
     seconds = 0;
     updateCanvasDimensions();
+    //start animations
     startWaveAnimation();
 }
-
+// Функция для получения ICE-серверов с бэкенда
 async function fetchIceServers() {
     try {
         const response = await fetch(
@@ -238,22 +265,23 @@ async function fetchIceServers() {
         iceConfig = data.iceServers;
     } catch (e) {
         console.error("Ошибка получения ICE конфигурации:", e);
+        // Резервный STUN на случай сбоя
         iceConfig = [{ urls: "stun:stun.l.google.com:19302" }];
     }
 }
-
+// --- ЛОГИКА ЗВОНКА И ИНТЕРАКТИВА ---
 async function toggleCallAction() {
     const btn = document.getElementById("btn-action");
     const statusEl = document.getElementById("call-status");
-
-    // ----- Обработка входящего звонка (нажата ANSWER) -----
     if (incomingCallPending) {
         try {
+            // Отправляем сигнал, чтобы звонящий начал создавать оффер
             signalingSocket.send(JSON.stringify({
                 type: "accept_call",
                 target: currentCallTarget,
             }));
 
+            // Готовимся к звонку
             if (!localStream) await setupAudio();
             if (!pc) await createPeerConnection();
 
@@ -262,7 +290,7 @@ async function toggleCallAction() {
 
             btn.innerText = "CONNECTING...";
             btn.className = "btn-large btn-blue";
-            btn.disabled = true;
+            btn.disabled = true; // пока не получим оффер
             statusEl.innerText = "WAITING FOR OFFER";
             statusEl.style.color = "#aaa";
         } catch (err) {
@@ -272,47 +300,54 @@ async function toggleCallAction() {
         }
         return;
     }
-
-    // ----- Если уже есть ожидающий оффер (маловероятно, но возможно) -----
     if (pendingOffer) {
         console.log("[Action] Answering incoming call...");
         try {
             if (!localStream) await setupAudio();
             if (!pc) await createPeerConnection();
+            // 1. Принимаем данные звонящего
             await pc.setRemoteDescription(
                 new RTCSessionDescription({ type: "offer", sdp: pendingOffer }),
             );
+
+            // 2. Создаем ответ
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
+
+            // 3. Отправляем ответ серверу
+            //странная отправка ответа не пойму зачем
             signalingSocket.send(JSON.stringify({
                 type: "answer",
-                target: currentCallTarget,
+                target: currentCallTarget, // тот, кто звонил
                 sdp: answer.sdp,
             }));
-            pendingOffer = null;
+
+            // 4. Обновляем UI: мы теперь в разговоре
+            pendingOffer = null; // Сбрасываем флаг входящего
             awaitingOffer = false;
-            isCalling = true;
+            isCalling = true; // Включаем флаг активного звонка
+
             btn.innerText = "END CALL";
-            btn.className = "btn-large btn-red";
+            btn.className = "btn-large btn-red"; // Красная для сброса
             btn.disabled = false;
             statusEl.innerText = "CONNECTED";
             statusEl.style.color = "#4aff4a";
+
             startTimer();
         } catch (err) {
             console.error("Error answering call:", err);
             statusEl.innerText = "ANSWER FAILED";
             stopCall();
         }
-        return;
+        return; // Выходим, чтобы не идти дальше по коду
     }
-
-    // ----- Начало нового исходящего звонка -----
     if (!isCalling) {
         try {
             if (!currentCallTarget) {
                 statusEl.innerText = "NO TARGET";
                 return;
             }
+            // Проверка авторизации
             const sessionData = JSON.parse(
                 localStorage.getItem("agora_session") || "{}",
             );
@@ -321,26 +356,34 @@ async function toggleCallAction() {
                 renderAuthModule();
                 return;
             }
+
             statusEl.innerText = "CONNECTING...";
+
+            // 1. Получаем ICE серверы
             await fetchIceServers();
-            await setupAudio();
+
+            // 2. Получаем микрофон с улучшенными настройками
+            await setupAudio(); // Используем существующую функцию
+
             await createPeerConnection();
-            signalingSocket.send(
-                JSON.stringify({
-                    type: "call_request",
-                    target: currentCallTarget,
-                }),
-            );
+
+            signalingSocket.send(JSON.stringify(
+                { type: "call_request", target: currentCallTarget },
+            ));
+
             btn.innerText = "CALLING>>>";
-            btn.className = "btn-large btn-blue";
+            btn.className = "btn-large btn-blue"; // Лучше менять класс, чем style
             btn.disabled = true;
+
             statusEl.innerText = "CONNECTION";
+            //startTimer();
         } catch (err) {
             console.error("call error", err);
             statusEl.innerText = err.message.includes("microphone")
                 ? "MIC ACCESS DENIED"
                 : "CONNECTION FAILED";
             statusEl.style.color = "#ff4a4a";
+            //stopCall();
             if (pc) {
                 pc.close();
                 pc = null;
@@ -352,17 +395,33 @@ async function toggleCallAction() {
         }
         return;
     }
-
-    // ----- Завершение активного звонка -----
+    // ЗАВЕРШИТЬ ЗВОНОК
     stopCall();
+    // Возврат к списку контактов через секунду
     setTimeout(renderConnectModule, 1000);
 }
 
+function endCall() {
+    isTerminating = false;
+    isCalling = false;
+    stopTimer();
+    const btn = document.getElementById("btn-action");
+    const statusEl = document.getElementById("call-status");
+
+    btn.innerText = "CALL";
+    btn.className = "btn-large btn-green";
+    statusEl.innerText = "ENDED";
+    statusEl.style.color = "#ff4a4a";
+    statusEl.classList.remove("blink");
+}
+
 function toggleMute() {
-    if (!isCalling) return;
+    if (!isCalling) return; // Нельзя мутить если не звоним (опционально)
+
     isMuted = !isMuted;
     const micCanvas = document.getElementById("mic-canvas");
     const statusEl = document.getElementById("call-status");
+
     if (isMuted) {
         micCanvas.classList.add("muted-border");
         statusEl.innerText = "MUTED";
@@ -373,18 +432,29 @@ function toggleMute() {
         statusEl.style.color = "#4aff4a";
     }
 }
-
+// flip animation for sound source
 function toggleSource() {
     const cube = document.getElementById("source-cube");
+
+    // Переключаем класс переворота
     cube.classList.toggle("is-flipped");
-    currentSource = currentSource === "HEADPHONES" ? "SPEAKERS" : "HEADPHONES";
+
+    // Обновляем логическую переменную
+    if (currentSource === "HEADPHONES") {
+        currentSource = "SPEAKERS";
+        // Текст не меняем, он прописан в HTML самой грани куба
+    } else {
+        currentSource = "HEADPHONES";
+    }
 }
 
 function activateVosklet() {
+    // Функция для кнопки VOSKLET (заглушка)
     console.log("Vosklet activated");
 }
 
 // ========== WebRTC И СИГНАЛИНГ ==========
+
 function getRoomId(userA, userB) {
     return [userA, userB].sort().join("_");
 }
@@ -395,21 +465,30 @@ function connectSignaling(token) {
         `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
 
-    signalingSocket.onopen = () => console.log("[Signal] Connected as", token);
+    signalingSocket.onopen = () => {
+        console.log("[Signal] Connected as", token);
+    };
+
     signalingSocket.onmessage = async (event) => {
         const message = JSON.parse(event.data);
         await handleSignalingMessage(message);
     };
-    signalingSocket.onclose = (event) =>
-        console.log("[Signal] Disconnected", event.reason);
-    signalingSocket.onerror = (err) => console.error("[Signal] Error", err);
-}
 
+    signalingSocket.onclose = (event) => {
+        console.log("[Signal] Disconnected", event.reason);
+        // Если сессия ещё валидна, можно попробовать переподключиться через таймаут
+    };
+
+    signalingSocket.onerror = (err) => {
+        console.error("[Signal] Error", err);
+    };
+}
 async function createPeerConnection() {
     pc = new RTCPeerConnection({
         iceServers: iceConfig || [{ urls: "stun:stun.l.google.com:19302" }],
     });
 
+    // 1. Отправляем свои ICE кандидаты, когда они находятся
     pc.onicecandidate = (event) => {
         if (event.candidate && signalingSocket?.readyState === WebSocket.OPEN) {
             signalingSocket.send(JSON.stringify({
@@ -420,8 +499,10 @@ async function createPeerConnection() {
         }
     };
 
+    // 2. Обработка входящего потока (звук собеседника)
     pc.ontrack = (event) => {
         console.log("Remote track received");
+        // Используем ваш код для воспроизведения
         if (remoteAudioElement) remoteAudioElement.srcObject = null;
         remoteAudioElement = new Audio();
         remoteAudioElement.srcObject = event.streams[0];
@@ -430,6 +511,7 @@ async function createPeerConnection() {
             console.log("Autoplay blocked", e)
         );
 
+        // Визуализация (если нужно)
         if (audioContext && audioContext.state !== "closed") {
             const source = audioContext.createMediaStreamSource(
                 event.streams[0],
@@ -441,25 +523,30 @@ async function createPeerConnection() {
         }
     };
 
+    // 3. Добавляем свой микрофон в соединение
     if (localStream) {
         localStream.getTracks().forEach((track) =>
             pc.addTrack(track, localStream)
         );
     }
-}
 
+    console.log("PeerConnection initialized");
+}
 async function handleSignalingMessage(message) {
     switch (message.type) {
         case "start_offer": {
+            // Сервер сказал: "Вы первый, начинайте звонок"
             console.log("[Signal] Creating Offer...");
             try {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
-                signalingSocket.send(JSON.stringify({
-                    type: "offer",
-                    target: currentCallTarget,
-                    sdp: offer.sdp,
-                }));
+                signalingSocket.send(
+                    JSON.stringify({
+                        type: "offer",
+                        target: currentCallTarget,
+                        sdp: offer.sdp,
+                    }),
+                );
                 const statusEl = document.getElementById("call-status");
                 if (statusEl) statusEl.innerText = "RINGING>>>";
             } catch (e) {
@@ -467,19 +554,21 @@ async function handleSignalingMessage(message) {
             }
             break;
         }
-        case "incoming_call": {
+        case "incoming_call":
+            // Входящий звонок: показываем UI, сохраняем pendingOffer = true
             console.log("[Signal] Incoming call from", message.from);
-            currentCallTarget = message.from;
-            renderCallInterfaceFromIncoming(message.from);
+            currentCallTarget = message.from; // от кого звонок
+            // Отображаем интерфейс звонка с кнопкой ANSWER
+            renderCallInterfaceFromIncoming(message.from); // см. ниже
             break;
-        }
+
         case "offer": {
             console.log("[Signal] Offer received");
             if (awaitingOffer) {
-                pendingOffer = message.sdp;
+                // Мы уже нажали ANSWER и ждём оффер – отвечаем автоматически
+                pendingOffer = message.sdp; // временно сохраним для единообразного ответа
+                // Вызываем тот же код, что и в ветке pendingOffer, но без клика
                 try {
-                    if (!localStream) await setupAudio();
-                    if (!pc) await createPeerConnection();
                     await pc.setRemoteDescription(
                         new RTCSessionDescription({
                             type: "offer",
@@ -513,6 +602,7 @@ async function handleSignalingMessage(message) {
                     stopCall();
                 }
             } else {
+                // Обычное ожидание – пользователь ещё не нажал ANSWER
                 pendingOffer = message.sdp;
                 const statusEl = document.getElementById("call-status");
                 if (statusEl) {
@@ -529,7 +619,9 @@ async function handleSignalingMessage(message) {
             }
             break;
         }
+
         case "answer": {
+            // Наш Offer приняли.
             console.log("[Signal] Received Answer");
             await pc.setRemoteDescription(
                 new RTCSessionDescription({ type: "answer", sdp: message.sdp }),
@@ -541,15 +633,14 @@ async function handleSignalingMessage(message) {
                 btn.className = "btn-large btn-red";
                 btn.disabled = false;
             }
-            const statusEl = document.getElementById("call-status");
-            if (statusEl) {
-                statusEl.innerText = "CONNECTED";
-                statusEl.style.color = "#4aff4a";
-            }
+
+            document.getElementById("call-status").innerText = "CONNECTED";
             startTimer();
             break;
         }
+
         case "candidate": {
+            // Настроили сетевой маршрут
             try {
                 await pc.addIceCandidate(
                     new RTCIceCandidate(message.candidate),
@@ -559,15 +650,15 @@ async function handleSignalingMessage(message) {
             }
             break;
         }
-        case "peer_disconnected": {
+
+        case "peer_disconnected":
             stopCall();
             alert("Peer disconnected");
             break;
-        }
     }
 }
-
 function renderCallInterfaceFromIncoming(callerName) {
+    // Используем тот же UI, что и для исходящего, но с кнопкой ANSWER
     initCallInterface(callerName);
     incomingCallPending = true;
     awaitingOffer = false;
@@ -583,6 +674,7 @@ function renderCallInterfaceFromIncoming(callerName) {
         statusEl.innerText = "INCOMING CALL";
         statusEl.style.color = "#ff9900";
     }
+    // Запускаем анимацию
     startWaveAnimation();
 }
 
@@ -590,9 +682,10 @@ function stopCall() {
     if (isTerminating) return;
     isTerminating = true;
     if (signalingSocket && currentCallTarget) {
-        signalingSocket.send(
-            JSON.stringify({ type: "call_end", target: currentCallTarget }),
-        );
+        signalingSocket.send(JSON.stringify({
+            type: "call_end",
+            target: currentCallTarget,
+        }));
     }
     pendingOffer = null;
     incomingCallPending = false;
@@ -610,10 +703,10 @@ function stopCall() {
         remoteAudioElement.srcObject = null;
         remoteAudioElement = null;
     }
-    stopCallSimulation();
+    // Возвращаем UI в состояние ожидания
+    stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
 }
-
 function cancelIncomingCall() {
     if (incomingCallPending || awaitingOffer) {
         if (signalingSocket && currentCallTarget) {
@@ -624,6 +717,7 @@ function cancelIncomingCall() {
         incomingCallPending = false;
         awaitingOffer = false;
         pendingOffer = null;
+        // Закрыть pc и стримы, если были созданы (для автоответа)
         if (pc) {
             pc.close();
             pc = null;
@@ -634,7 +728,6 @@ function cancelIncomingCall() {
         }
     }
 }
-
 // --- ТАЙМЕР ---
 function startTimer() {
     stopTimer();
@@ -652,7 +745,7 @@ function stopTimer() {
     clearInterval(callTimerInterval);
 }
 
-// --- ВИЗУАЛИЗАЦИЯ ---
+// --- ВИЗУАЛИЗАЦИЯ (CANVAS) ---
 function updateCanvasDimensions() {
     const c1 = document.getElementById("remote-canvas");
     const c2 = document.getElementById("mic-canvas");
@@ -663,7 +756,6 @@ function updateCanvasDimensions() {
         c2.height = c2.offsetHeight;
     }
 }
-
 async function setupAudio() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({
@@ -673,12 +765,15 @@ async function setupAudio() {
                 autoGainControl: true,
             },
         });
+
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
         const source = audioContext.createMediaStreamSource(localStream);
+
         analyser.fftSize = 256;
         dataArray = new Uint8Array(analyser.frequencyBinCount);
         source.connect(analyser);
+
         console.log("Микрофон захвачен успешно");
     } catch (err) {
         console.error("Доступ к микрофону запрещен:", err);
@@ -696,19 +791,25 @@ function startWaveAnimation() {
     const ctxRemote = document.getElementById("remote-canvas").getContext("2d");
     const ctxMic = document.getElementById("mic-canvas").getContext("2d");
 
+    // Функция рисования волны
     function draw(ctx, color, active, volumeData) {
         const w = ctx.canvas.width;
         const h = ctx.canvas.height;
         ctx.clearRect(0, 0, w, h);
+
+        // Настройки
         ctx.fillStyle = color;
-        const bars = 80;
+        const bars = 80; // вот тут бы поиграть количеством
         const barWidth = w / bars;
 
         for (let i = 0; i < bars; i++) {
-            const val = active ? (volumeData[i] || 0) : 0;
+            // Если звонок идет, берем данные из анализатора, иначе 0
+            const val = active ? volumeData[i] || 0 : 0;
+            // Рассчитываем высоту (минимум 2 пикселя для "линии жизни")
             const barHeight = (val / 255) * h * 0.9 + 2;
             const x = i * barWidth;
             const y = (h - barHeight) / 2;
+
             ctx.fillRect(x, y, barWidth - 2, barHeight);
         }
     }
@@ -719,43 +820,63 @@ function startWaveAnimation() {
             animationFrameId = null;
             return;
         }
+        // 1. Получаем данные своего микрофона
         if (analyser && !isMuted && dataArray) {
             analyser.getByteFrequencyData(dataArray);
         } else if (dataArray) {
-            dataArray.fill(0);
+            dataArray.fill(0); // Тишина, если выключен микрофон
         }
+
+        // 2. Получаем данные собеседника
         if (remoteAnalyser && remoteDataArray) {
             remoteAnalyser.getByteFrequencyData(remoteDataArray);
         } else if (remoteDataArray) {
             remoteDataArray.fill(0);
         }
+
+        // Цвет входящего (верхний) - #a0a0a0 или активный
         draw(ctxRemote, "#a0a0a0", isCalling, remoteDataArray || []);
-        draw(ctxMic, isMuted ? "#552222" : "#a0a0a0", isCalling, dataArray);
+
+        // Цвет исходящего (нижний) - зависит от Mute
+        const micColor = isMuted ? "#552222" : "#a0a0a0";
+        draw(ctxMic, micColor, isCalling, dataArray);
+
         animationFrameId = requestAnimationFrame(loop);
     }
     loop();
 }
 
-// ========== PWA ==========
+// ========== PWA И SERVICE WORKER ==========
+
+// Регистрация Service Worker для PWA
 if ("serviceWorker" in navigator) {
     self.addEventListener("load", () => {
         navigator.serviceWorker.register("./sw.js")
-            .then((reg) => console.log("[SW] Зарегистрирован:", reg.scope))
-            .catch((err) => console.error("[SW] Ошибка регистрации:", err));
+            .then((registration) => {
+                console.log("[SW] Зарегистрирован:", registration.scope);
+            })
+            .catch((error) => {
+                console.error("[SW] Ошибка регистрации:", error);
+            });
     });
 }
 
+// Проверка поддержки PWA и предложение установки
 let deferredPrompt;
+
 self.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e;
+    // Можно показать кнопку "Установить приложение"
+    // showInstallPromotion();
 });
+
+// Отслеживание установки
 self.addEventListener("appinstalled", () => {
     console.log("[PWA] Приложение установлено");
     deferredPrompt = null;
 });
-
-// ========== ИНИЦИАЛИЗАЦИЯ ==========
+// ========== ИНИЦИАЛИЗАЦИЯ И ОБРАБОТЧИКИ СОБЫТИЙ ==========
 window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
 window.addEventListener("load", () => {
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
