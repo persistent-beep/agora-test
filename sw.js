@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v14";
+const CACHE_NAME = "agora-hub-v15";
 const ASSETS = [
   "./",
   "./index.html",

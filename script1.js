@@ -10,6 +10,7 @@ let animationFrameId; // this for stoping animaton in background
 let isMuted = false; // для анимации волны пока не работает
 let currentSource = "HEADPHONES"; // или 'SPEAKERS'     это нихуя не работает
 let seconds = 0; // это я так понимаю для таймера
+let pendingCandidates = [];
 
 let isTerminating = false;
 let isCalling = false;
@@ -333,6 +334,13 @@ async function toggleCallAction() {
             await pc.setRemoteDescription(
                 new RTCSessionDescription({ type: "offer", sdp: pendingOffer }),
             );
+            for (const c of pendingCandidates) {
+                await pc.addIceCandidate(
+                    new RTCIceCandidate(c),
+                );
+            }
+
+            pendingCandidates = [];
 
             // 2. Создаем ответ
             const answer = await pc.createAnswer();
@@ -707,6 +715,13 @@ async function handleSignalingMessage(message) {
             await pc.setRemoteDescription(
                 new RTCSessionDescription({ type: "answer", sdp: message.sdp }),
             );
+            for (const c of pendingCandidates) {
+                await pc.addIceCandidate(
+                    new RTCIceCandidate(c),
+                );
+            }
+
+            pendingCandidates = [];
             isCalling = true;
             const btn = document.getElementById("btn-action");
             if (btn) {
@@ -720,15 +735,33 @@ async function handleSignalingMessage(message) {
             break;
         }
 
-        case "candidate": {
-            // Настроили сетевой маршрут
+        case "candidate": //{
+        // Настроили сетевой маршрут
+        //    try {
+        //        await pc.addIceCandidate(
+        //            new RTCIceCandidate(message.candidate),
+        //        );
+        //    } catch (e) {
+        //        console.error("ICE Candidate Error", e);
+        //    }
+        //    break;
+        //}
+
+        {
             try {
-                await pc.addIceCandidate(
-                    new RTCIceCandidate(message.candidate),
-                );
+                // remoteDescription уже установлен
+                if (pc.remoteDescription) {
+                    await pc.addIceCandidate(
+                        new RTCIceCandidate(message.candidate),
+                    );
+                } else {
+                    // SDP еще не установлен → складываем в очередь
+                    pendingCandidates.push(message.candidate);
+                }
             } catch (e) {
                 console.error("ICE Candidate Error", e);
             }
+
             break;
         }
 
@@ -775,6 +808,7 @@ function stopCall() {
     }
     pendingOffer = null;
     incomingCallPending = false;
+    pendingCandidates = [];
     awaitingOffer = false;
     if (pc) {
         pc.close();
