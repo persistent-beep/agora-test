@@ -51,7 +51,169 @@ function debounce(func, delay) {
         timeout = setTimeout(() => func.apply(this, args), delay);
     };
 }
+const STATES = {
+    IDLE: "IDLE",
+    AWAITING_ANSWER: "AWAITING_ANSWER",
+    RINGING: "RINGING",
+    CONNECTING: "CONNECTING",
+    CONNECTED: "CONNECTED",
+    FAILED: "FAILED",
+    ENDED: "ENDED",
+};
 
+// Разрешенные переходы (откуда -> куда)
+const TRANSITIONS = {
+    [STATES.IDLE]: [STATES.AWAITING_ANSWER, STATES.RINGING],
+    [STATES.AWAITING_ANSWER]: [STATES.CONNECTING, STATES.ENDED, STATES.FAILED],
+    [STATES.RINGING]: [STATES.CONNECTING, STATES.ENDED, STATES.IDLE], // IDLE если отклонили
+    [STATES.CONNECTING]: [STATES.CONNECTED, STATES.FAILED, STATES.ENDED],
+    [STATES.CONNECTED]: [STATES.ENDED, STATES.FAILED],
+    [STATES.FAILED]: [STATES.IDLE], // Попробовать снова
+    [STATES.ENDED]: [STATES.IDLE], // Готовы к новому звонку
+};
+
+class CallStateMachine {
+    constructor() {
+        this.state = STATES.IDLE;
+        this.listeners = [];
+    }
+
+    transition(newState) {
+        const allowed = TRANSITIONS[this.state];
+        if (!allowed.includes(newState)) {
+            console.error(
+                `❌ Invalid transition: ${this.state} -> ${newState}`,
+            );
+            return false;
+        }
+        console.log(`✅ State transition: ${this.state} -> ${newState}`);
+        this.state = newState;
+        this.notifyListeners();
+        return true;
+    }
+
+    onStateChange(listener) {
+        this.listeners.push(listener);
+    }
+
+    notifyListeners() {
+        this.listeners.forEach((fn) => fn(this.state));
+    }
+}
+class CallManager {
+    constructor() {
+        this.fsm = new CallStateMachine();
+        this.pc = new RTCPeerConnection(config);
+        this.iceQueue = [];
+        this.isRemoteDescSet = false;
+
+        // Подписываемся на стейты FSM для обновления UI
+        this.fsm.onStateChange((state) => {
+            switch (state) {
+                case STATES.RINGING:
+                    this.showIncomingCallUI();
+                    break;
+                case STATES.CONNECTED:
+                    this.showCallActiveUI();
+                    break;
+                case STATES.ENDED:
+                    this.cleanup();
+                    break;
+            }
+        });
+
+        // Слушаем внутренние стейты WebRTC и синхронизируем с нашей FSM
+        this.pc.oniceconnectionstatechange = () => {
+            switch (this.pc.iceConnectionState) {
+                case "connected":
+                case "completed":
+                    this.fsm.transition(STATES.CONNECTED);
+                    break;
+                case "disconnected":
+                case "failed":
+                    this.fsm.transition(STATES.FAILED);
+                    break;
+            }
+        };
+    }
+
+    // --- ДЕЙСТВИЯ ПОЛЬЗОВАТЕЛЯ ---
+
+    call() {
+        if (this.fsm.state !== STATES.IDLE) return; // Защита от двойного звонка
+
+        this.fsm.transition(STATES.AWAITING_ANSWER);
+        const offer = await this.pc.createOffer();
+        await this.pc.setLocalDescription(offer);
+        signalingServer.send({ type: "offer", sdp: offer });
+    }
+
+    answer() {
+        if (this.fsm.state !== STATES.RINGING) return; // Ответить можно только если звонят
+
+        this.fsm.transition(STATES.CONNECTING);
+        const answer = await this.pc.createAnswer();
+        await this.pc.setLocalDescription(answer);
+        signalingServer.send({ type: "answer", sdp: answer });
+    }
+
+    hangup() {
+        if (this.fsm.state === STATES.IDLE || this.fsm.state === STATES.ENDED) {
+            return;
+        }
+
+        this.fsm.transition(STATES.ENDED);
+        this.pc.close();
+    }
+
+    // --- ОБРАБОТКА СИГНАЛЬНЫХ СООБЩЕНИЙ ---
+
+    async handleSignalingMessage(msg) {
+        switch (msg.type) {
+            case "offer":
+                if (this.fsm.state !== STATES.IDLE) return; // Мы уже в звонке, игнорим (или реализуем Perfect Negotiation)
+
+                this.fsm.transition(STATES.RINGING);
+                await this.pc.setRemoteDescription(
+                    new RTCSessionDescription(msg.sdp),
+                );
+                this.flushIceQueue();
+                break;
+
+            case "answer":
+                if (this.fsm.state !== STATES.AWAITING_ANSWER) return; // Мы не звонили, игнорим
+
+                this.fsm.transition(STATES.CONNECTING);
+                await this.pc.setRemoteDescription(
+                    new RTCSessionDescription(msg.sdp),
+                );
+                this.flushIceQueue();
+                break;
+
+            case "ice-candidate":
+                this.handleIceCandidate(msg.candidate);
+                break;
+        }
+    }
+
+    // --- Тот самый фикс Race Condition ---
+
+    handleIceCandidate(candidate) {
+        if (this.isRemoteDescSet) {
+            this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } else {
+            this.iceQueue.push(candidate);
+        }
+    }
+
+    flushIceQueue() {
+        this.isRemoteDescSet = true;
+        while (this.iceQueue.length) {
+            const candidate = this.iceQueue.shift();
+            this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+    }
+}
 // ========== ОСНОВНАЯ НАВИГАЦИЯ И УПРАВЛЕНИЕ СОСТОЯНИЕМ ==========
 // --- ЛОГИКА НАВИГАЦИИ --- ЛОГИКА ПОВЕДЕНИЯ ЛОГОТИПА ---
 
@@ -563,6 +725,46 @@ function connectSignaling(token) {
     signalingSocket.onerror = (err) => {
         console.error("[Signal] Error", err);
     };
+}
+class PeerConnection {
+    constructor() {
+        this.pc = new RTCPeerConnection(config);
+        this.iceCandidatesQueue = []; // Очередь для кандидатов
+        this.isRemoteDescSet = false; // Флаг, что удаленный SDP установлен
+
+        this.pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                // Отправляем кандидата на сигнальный сервер
+                signalingServer.send({
+                    type: "ice-candidate",
+                    candidate: event.candidate,
+                });
+            }
+        };
+    }
+
+    // Вызываем, когда пришел offer или answer
+    async setRemoteSDP(sdp) {
+        await this.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        this.isRemoteDescSet = true;
+
+        // Разгружаем очередь - добавляем все кандидаты, которые пришли раньше времени
+        while (this.iceCandidatesQueue.length) {
+            const candidate = this.iceCandidatesQueue.shift();
+            await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+    }
+
+    // Вызываем, когда пришел ice-candidate по сокету
+    async addIceCandidate(candidate) {
+        if (!this.isRemoteDescSet) {
+            // SDP еще не установлен, кладем в очередь
+            this.iceCandidatesQueue.push(candidate);
+            return;
+        }
+        // SDP установлен, применяем сразу
+        await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
 }
 async function createPeerConnection() {
     pc = new RTCPeerConnection({
