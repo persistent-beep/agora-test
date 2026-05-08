@@ -269,6 +269,28 @@ async function fetchIceServers() {
         iceConfig = [{ urls: "stun:stun.l.google.com:19302" }];
     }
 }
+async function waitIceGathering(pc) {
+    if (pc.iceGatheringState === "complete") {
+        return;
+    }
+
+    await new Promise((resolve) => {
+        function checkState() {
+            if (pc.iceGatheringState === "complete") {
+                pc.removeEventListener(
+                    "icegatheringstatechange",
+                    checkState,
+                );
+                resolve();
+            }
+        }
+
+        pc.addEventListener(
+            "icegatheringstatechange",
+            checkState,
+        );
+    });
+}
 // --- ЛОГИКА ЗВОНКА И ИНТЕРАКТИВА ---
 async function toggleCallAction() {
     const btn = document.getElementById("btn-action");
@@ -316,12 +338,14 @@ async function toggleCallAction() {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
+            await waitIceGathering(pc);
+
             // 3. Отправляем ответ серверу
             //странная отправка ответа не пойму зачем
             signalingSocket.send(JSON.stringify({
                 type: "answer",
                 target: currentCallTarget, // тот, кто звонил
-                sdp: answer.sdp,
+                sdp: pc.localDescription.sdp,
             }));
 
             // 4. Обновляем UI: мы теперь в разговоре
@@ -590,11 +614,14 @@ async function handleSignalingMessage(message) {
             try {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
+
+                await waitIceGathering(pc);
+
                 signalingSocket.send(
                     JSON.stringify({
                         type: "offer",
                         target: currentCallTarget,
-                        sdp: offer.sdp,
+                        sdp: pc.localDescription.sdp,
                     }),
                 );
                 const statusEl = document.getElementById("call-status");
@@ -630,10 +657,11 @@ async function handleSignalingMessage(message) {
                     );
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
+                    await waitIceGathering();
                     signalingSocket.send(JSON.stringify({
                         type: "answer",
                         target: currentCallTarget,
-                        sdp: answer.sdp,
+                        sdp: pc.localDescription.sdp,
                     }));
                     pendingOffer = null;
                     awaitingOffer = false;
