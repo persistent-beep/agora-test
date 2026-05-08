@@ -27,6 +27,7 @@ let signalingSocket = null;
 let iceConfig = [];
 let iceQueue = [];
 let remoteAudioElement = null;
+let pendingOfferSdp = null; // Хранилище входящего оффера
 
 // Аудио визуализация
 let audioContext = null;
@@ -410,6 +411,12 @@ async function answerCall() {
         signalingSocket.send(
             JSON.stringify({ type: "accept_call", target: currentCallTarget }),
         );
+        // Если оффер уже пришел (сохранен в переменную), обрабатываем его сразу!
+        if (pendingOfferSdp) {
+            const sdp = pendingOfferSdp;
+            pendingOfferSdp = null; // Чистим переменную
+            await processOfferAndAnswer(sdp);
+        }
     } catch (err) {
         console.error("Answer error:", err);
         updateCallUI("ANSWER", "btn-green", "ERROR", "#ff4a4a", false);
@@ -559,11 +566,11 @@ async function handleSignalingMessage(msg) {
 
         case "offer": {
             if (callState === "AWAITING_OFFER") {
-                // Мы уже нажали ANSWER, обрабатываем автоматически
+                // Мы уже нажали ANSWER и ждали — обрабатываем мгновенно
                 await processOfferAndAnswer(msg.sdp);
             } else if (callState === "IDLE" || callState === "RINGING_IN") {
-                // Оффер пришел раньше, чем мы нажали ANSWER (или мы не успели отрисовать UI)
-                initCallInterface(msg.from); // Обновляем UI если не был открыт
+                // Оффер пришел ДО того, как пользователь нажал ANSWER
+                initCallInterface(msg.from);
                 callState = "RINGING_IN";
                 updateCallUI(
                     "ANSWER",
@@ -573,17 +580,9 @@ async function handleSignalingMessage(msg) {
                     false,
                 );
 
-                // Сохраняем оффер во временную переменную, чтобы использовать при клике
-                window._pendingOfferSdp = msg.sdp;
-
-                // Подменяем функцию ответа для этого конкретного клика
-                const origAnswer = answerCall;
-                answerCall = async () => {
-                    answerCall = origAnswer; // Восстанавливаем
-                    await origAnswer();
-                    await processOfferAndAnswer(window._pendingOfferSdp);
-                    delete window._pendingOfferSdp;
-                };
+                // Просто сохраняем SDP в переменную. Когда юзер нажмет кнопку,
+                // функция answerCall() сама его подхватит.
+                pendingOfferSdp = msg.sdp;
             }
             break;
         }
