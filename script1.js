@@ -518,6 +518,14 @@ function connectSignaling(token) {
     signalingSocket.onclose = (event) => {
         console.log("[Signal] Disconnected", event.reason);
         // Если сессия ещё валидна, можно попробовать переподключиться через таймаут
+        if (isCalling || incomingCallPending || awaitingOffer) {
+            stopCall();
+            setTimeout(() => {
+                if (currentState === "CONTENT") {
+                    renderConnectModule();
+                }
+            }, 500);
+        }
     };
 
     signalingSocket.onerror = (err) => {
@@ -698,6 +706,10 @@ async function handleSignalingMessage(message) {
 
         case "peer_disconnected":
             stopCall();
+            setTimeout(() => {
+                if (currentState === "CONTENT") renderConnectModule();
+            }, 1000);
+
             break;
     }
 }
@@ -750,6 +762,14 @@ function stopCall() {
         remoteAudioElement = null;
     }
     // Возвращаем UI в состояние ожидания
+    if (audioContext && audioContext.state !== "closed") {
+        audioContext.close();
+    }
+    audioContext = null;
+    analyser = null;
+    dataArray = null;
+    remoteAnalyser = null;
+    remoteDataArray = null;
     endCall();
     stopCallSimulation(); // Ваша старая функция для очистки анимации
     console.log("Звонок завершен");
