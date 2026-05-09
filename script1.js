@@ -290,7 +290,7 @@ async function createPeerConnection() {
     await fetchIceServers();
     pc = new RTCPeerConnection({
         iceServers: iceConfig,
-        iceTransportPolicy: "relay",
+        iceTransportPolicy: "all",
     });
     iceQueue = []; // Сбрасываем очередь для нового соединения
 

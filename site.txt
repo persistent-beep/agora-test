@@ -1071,7 +1071,7 @@ async function createPeerConnection() {
     await fetchIceServers();
     pc = new RTCPeerConnection({
         iceServers: iceConfig,
-        iceTransportPolicy: "relay",
+        iceTransportPolicy: "all",
     });
     iceQueue = []; // Сбрасываем очередь для нового соединения
 
@@ -1556,7 +1556,7 @@ if ("serviceWorker" in navigator) {
         );
     });
 }
-const CACHE_NAME = "agora-hub-v18";
+const CACHE_NAME = "agora-hub-v20";
 const ASSETS = [
   "./",
   "./index.html",
