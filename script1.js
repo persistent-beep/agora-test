@@ -435,7 +435,7 @@ async function processOfferAndAnswer(sdp) {
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    await waitIceGathering(pc);
+    //await waitIceGathering(pc);
 
     signalingSocket.send(JSON.stringify({
         type: "answer",
@@ -526,7 +526,7 @@ async function handleSignalingMessage(msg) {
             try {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
-                await waitIceGathering(pc);
+                //await waitIceGathering(pc);
                 signalingSocket.send(
                     JSON.stringify({
                         type: "offer",
