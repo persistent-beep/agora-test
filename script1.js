@@ -68,10 +68,15 @@ async function fetchIceServers() {
 }
 
 async function waitIceGathering(peerConnection) {
-    if (peerConnection.iceGatheringState === "complete") return;
+    if (peerConnection.iceGatheringState === "complete") {
+        console.log("[ICE] gathering уже complete, ждать не нужно");
+        return;
+    }
+    console.log("[ICE] ожидаю завершения gathering...");
     await new Promise((resolve) => {
         const checkState = () => {
             if (peerConnection.iceGatheringState === "complete") {
+                console.log("[ICE] gathering завершён (complete)");
                 peerConnection.removeEventListener(
                     "icegatheringstatechange",
                     checkState,
@@ -294,7 +299,43 @@ async function createPeerConnection() {
     });
     iceQueue = []; // Сбрасываем очередь для нового соединения
 
+    // === ДИАГНОСТИКА ===
+    const startTime = performance.now();
+    console.log(
+        "[ICE] PeerConnection создан, политика:",
+        pc.iceTransportPolicy || "all",
+    );
+
+    pc.onicegatheringstatechange = () => {
+        console.log(
+            `[ICE] gathering state → ${pc.iceGatheringState} (через ${
+                ((performance.now() - startTime) / 1000).toFixed(1)
+            }s)`,
+        );
+    };
+
+    pc.oniceconnectionstatechange = () => {
+        console.log(
+            `[ICE] connection state → ${pc.iceConnectionState} (через ${
+                ((performance.now() - startTime) / 1000).toFixed(1)
+            }s)`,
+        );
+    };
+    // +===== DIAGNOSTICS ends
     pc.onicecandidate = (event) => {
+        // диагностика
+        if (event.candidate) {
+            console.log(
+                `[ICE] кандидат: тип=${event.candidate.type}, протокол=${event.candidate.protocol}, адрес=${event.candidate.address}`,
+            );
+        } else {
+            console.log(
+                `[ICE] кандидаты закончились (end-of-candidates) через ${
+                    ((performance.now() - startTime) / 1000).toFixed(1)
+                }s`,
+            );
+        }
+        // твоя существующая логика отправки
         if (event.candidate && signalingSocket?.readyState === WebSocket.OPEN) {
             signalingSocket.send(JSON.stringify({
                 type: "candidate",
