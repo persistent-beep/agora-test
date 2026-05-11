@@ -350,9 +350,10 @@ async function createPeerConnection() {
         remoteAudioElement = new Audio();
         remoteAudioElement.srcObject = event.streams[0];
         remoteAudioElement.autoplay = true;
-        remoteAudioElement.play().catch((e) =>
-            console.log("Autoplay blocked", e)
-        );
+        remoteAudioElement.play().catch((e) => {
+            console.log("Autoplay blocked", e);
+            alert("Нажмите 'ОК', чтобы разрешить звук в браузере");
+        });
 
         if (audioContext && audioContext.state !== "closed") {
             remoteAnalyser = audioContext.createAnalyser();
