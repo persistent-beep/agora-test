@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.staticfiles import StaticFiles
@@ -182,13 +183,36 @@ async def websocket_call(websocket: WebSocket, token: str = Query("guest")):
     if not user_info:
         await websocket.close(code=4001, reason="Invalid token")
         return
-    user_id = user_info["role"]   # например "ALICE"
+    
+    user_id = user_info["role"]   
     await user_manager.connect_user(user_id, websocket)
+    
     try:
         while True:
-            data = await websocket.receive_json()
+            # Ждем сообщение от клиента. 
+            # Если тишина больше 40 секунд — считаем клиента мертвым (выключил интернет/телефон)
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=40.0)
+            except asyncio.TimeoutError:
+                print(f"[WS] Таймаут пинга от {user_id}. Убиваем зомби-соединение.")
+                break # Выходим из цикла, чтобы закрыть сокет и почистить словарь
+            
+            # Обработка пинга-понга (НЕ пускаем это в основную логику звонков)
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+                
+            # Если это не пинг — отправляем в основную маршрутизацию
             await handle_signal_message(user_id, data, websocket)
+            
     except WebSocketDisconnect:
+        # Клиент отключился нормально (например, закрыл вкладку)
+        pass
+    except Exception as e:
+        # Случайная ошибка (например, отправили кривой JSON)
+        print(f"[WS] Ошибка у {user_id}: {e}")
+    finally:
+        # Эта блочная выполнится В ЛЮБОМ СЛУЧАЕ (даже при таймауте)
         user_manager.disconnect_user(user_id)
 
 

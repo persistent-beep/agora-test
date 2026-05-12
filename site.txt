@@ -111,235 +111,6 @@
 </template>
 </body>
 </html>
-import os
-import json
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-
-load_dotenv()
-
-app = FastAPI()
-
-base_path = os.path.dirname(os.path.realpath('main.py'))
-
-
-# Разрешаем корс 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins = ['*'],
-    allow_methods = ['*'],
-    allow_headers = ['*'],
-)
-
-class AuthRequest(BaseModel):
-    token: str
-
-
-# Заменяем старый ConnectionManager на UserManager
-class UserManager:
-    def __init__(self):
-        # user_id (role) → WebSocket
-        self.online: dict[str, WebSocket] = {}
-
-    async def connect_user(self, user_id: str, ws: WebSocket):
-        # Если уже был онлайн с другого устройства — отключаем старый
-        if user_id in self.online:
-            old_ws = self.online[user_id]
-            try:
-                await old_ws.close(code=4002, reason="replaced_by_new_session")
-            except:
-                pass
-        await ws.accept()
-        self.online[user_id] = ws
-
-    def disconnect_user(self, user_id: str):
-        self.online.pop(user_id, None)
-
-    def get_user_ws(self, user_id: str) -> WebSocket | None:
-        return self.online.get(user_id)
-
-user_manager = UserManager()
-
-# Проверка токена (используем ту же логику, что и в /auth/login)
-def get_user_from_token(token: str) -> dict | None:
-    users = json.loads(os.getenv("USERS_JSON", "{}"))
-    return users.get(token.lower().strip())
-
-# Функция получения конфига TURN для конкретной роли
-def get_ice_servers(role: str):
-    # Приводим роль к верхнему регистру для поиска в ENV 
-    env_prefix = role.split()[0].upper() 
-    
-    username = os.getenv(f"{env_prefix}_USER", "default_user")
-    credential = os.getenv(f"{env_prefix}_PASS", "default_pass")
-    domain = os.getenv("TURN")
-    
-    return [
-        { "urls": f"stun:stun.relay.metered.ca:80"},
-        {
-            "urls": [
-                f"turn:{domain}:80",
-                f"turn:{domain}:80?transport=tcp",
-                f"turn:{domain}:443",
-                f"turn:{domain}:443?transport=tcp"
-            ],
-            "username": username,
-            "credential": credential
-        },
-        {
-            "urls":f"turns:{domain}:443?transport=tcp",
-            "username": username,
-            "credential": credential
-        }
-    ]
-
-
-# Маршрутизация сообщений
-async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSocket):
-    msg_type = message.get("type")
-    
-    if msg_type == "call_request":
-        target = message["target"]
-        target_ws = user_manager.get_user_ws(target)
-        if target_ws:
-            # Пересылаем входящий вызов
-            await target_ws.send_json({
-                "type": "incoming_call",
-                "from": sender_id,
-                "room_id": f"{sender_id}_{target}"   # для совместимости, если нужно
-            })
-        else:
-            # Здесь будет отправка push (опционально)
-            # send_push(target, {...})
-            pass
-
-    elif msg_type == "accept_call":
-        target = message["target"]
-        target_ws = user_manager.get_user_ws(target)
-        if target_ws:
-            await target_ws.send_json({
-                "type": "start_offer",
-                "target": sender_id   # тому, кто звонил, говорим начинать
-            })
-
-    elif msg_type in ("offer", "answer", "candidate"):
-        target = message.get("target")
-        if target:
-            target_ws = user_manager.get_user_ws(target)
-            if target_ws:
-                # Добавляем поле from для идентификации отправителя
-                forwarded = {**message, "from": sender_id}
-                await target_ws.send_json(forwarded)
-
-    elif msg_type == "call_end":
-        target = message.get("target")
-        if target:
-            target_ws = user_manager.get_user_ws(target)
-            if target_ws:
-                await target_ws.send_json({"type": "peer_disconnected"})
-
-@app.post("/auth/login")
-async def login(data: AuthRequest):
-    token = data.token.lower().strip()
-    
-    users = json.loads(os.getenv("USERS_JSON","{}"))
-    user = users.get(token)
-    contacts = json.loads(os.getenv("ACCESS_MATRIX","{}"))
-    addressee = contacts.get(token)
-        
-    if not user:
-        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
-            
-    return {
-        "status": "success",
-        "contacts": addressee,
-        "role": user["role"],
-        "display_name": user["display_name"]
-    }
-
-# Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
-@app.get("/ice-servers")
-async def get_ice_config(role: str="guest"):
-    try:
-        servers = get_ice_servers(role)
-        return {"iceServers": servers}
-    except Exception as e:  # обработаем случай ошибки чтения файла
-        print(f"error gen {e}")
-        return {"urls":[{"urls":"stun:stun.l.google.com:19302"}]}
-
-# WebSocket endpoint для сигнализации
-#@app.websocket("/ws/{room_id}")
-#async def websocket_endpoint(websocket: WebSocket, room_id: str):
-#    await manager.connect(room_id, websocket)
-#    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
-#    try:    
-#        if len(manager.rooms[room_id]) == 2:
-#            first = manager.rooms[room_id][0]
-#        # Первый клиент начинает offer по сигналу
-#            await first.send_json({"type": "start_offer"})
-#        while True:
-#            data = await websocket.receive_json()
-#            await manager.broadcast_json(room_id, websocket, data)
-#    except WebSocketDisconnect:
-#        manager.disconnect(room_id, websocket)
-#        await manager.broadcast_json(room_id, websocket, {"type":"peer_disconnected"})
-
-# Новый WebSocket endpoint
-@app.websocket("/ws")
-async def websocket_call(websocket: WebSocket, token: str = Query("guest")):
-    user_info = get_user_from_token(token)
-    if not user_info:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
-    user_id = user_info["role"]   # например "ALICE"
-    await user_manager.connect_user(user_id, websocket)
-    try:
-        while True:
-            data = await websocket.receive_json()
-            await handle_signal_message(user_id, data, websocket)
-    except WebSocketDisconnect:
-        user_manager.disconnect_user(user_id)
-
-
-@app.get("/index")
-async def getindex():
-    return FileResponse(os.path.join(base_path,'index.html'))
-
-app.mount("/static", StaticFiles(directory=base_path), name="static")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-{
-  "name": "AGORA HUB",
-  "short_name": "AGORA",
-  "description": "Децентрализованный хаб для связи и обмена",
-  "start_url": "./",
-  "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#0a0a0a",
-  "orientation": "portrait-primary",
-  "icons": [
-    {
-      "src": "./icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "./icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ],
-  "categories": ["productivity", "communication"],
-  "lang": "ru"
-}
 // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И КОНФИГУРАЦИЯ ==========
 const BACKEND_URL = "https://agora-service.onrender.com";
 const API_URL = BACKEND_URL;
@@ -370,6 +141,8 @@ let iceConfig = [];
 let iceQueue = [];
 let remoteAudioElement = null;
 let pendingOfferSdp = null; // Хранилище входящего оффера
+let pingInterval = null;
+let reconnectTimeout = null; // Таймер автосброса при обрыве
 
 // Аудио визуализация
 let audioContext = null;
@@ -656,12 +429,84 @@ async function createPeerConnection() {
         );
     };
 
-    pc.oniceconnectionstatechange = () => {
-        console.log(
-            `[ICE] connection state → ${pc.iceConnectionState} (через ${
-                ((performance.now() - startTime) / 1000).toFixed(1)
-            }s)`,
-        );
+    pc.oniceconnectionstatechange = async () => {
+        console.log(`[ICE] connection state → ${pc.iceConnectionState}`);
+
+        // 1. ЕСЛИ СВЯЗЬ ВОССТАНОВИЛАСЬ
+        if (
+            pc.iceConnectionState === "connected" ||
+            pc.iceConnectionState === "completed"
+        ) {
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout); // Выключаем таймер смерти
+                reconnectTimeout = null;
+                updateCallUI(
+                    "END CALL",
+                    "btn-red",
+                    "CONNECTED",
+                    "#4aff4a",
+                    false,
+                );
+                console.log("[ICE] Переподключение успешно завершено!");
+            }
+        }
+
+        // 2. ЕСЛИ СВЯЗЬ РАЗОРВАЛАСЬ (Смена сети, метро, сел телефон)
+        if (
+            pc.iceConnectionState === "disconnected" ||
+            pc.iceConnectionState === "failed"
+        ) {
+            if (callState === "CONNECTED") {
+                console.log(
+                    "[ICE] Смена сети или обрыв! Запуск ICE Restart...",
+                );
+                updateCallUI(
+                    "RECONNECTING...",
+                    "btn-vosklet",
+                    "RECONNECTING",
+                    "#ff9900",
+                    true,
+                );
+
+                // --- ЗАПУСКАЕМ ТАЙМЕР СМЕРТИ ЗВОНКА (40 секунд) ---
+                if (!reconnectTimeout) {
+                    reconnectTimeout = setTimeout(() => {
+                        console.log(
+                            "[ICE] Время на переподключение вышло. Сбрасываем звонок.",
+                        );
+                        hangUp();
+                        // Слегка меняем текст после hangUp, чтобы было понятно, почему сбросилось
+                        updateCallUI(
+                            "CALL",
+                            "btn-green",
+                            "CONNECTION LOST",
+                            "#ff4a4a",
+                            false,
+                        );
+                    }, 40000);
+                }
+
+                try {
+                    // Создаем оффер с флагом iceRestart
+                    const offer = await pc.createOffer({ iceRestart: true });
+                    await pc.setLocalDescription(offer);
+
+                    // Отправляем собеседнику
+                    if (signalingSocket?.readyState === WebSocket.OPEN) {
+                        signalingSocket.send(JSON.stringify({
+                            type: "offer",
+                            target: currentCallTarget,
+                            sdp: pc.localDescription.sdp,
+                        }));
+                    }
+                } catch (err) {
+                    console.error("Ошибка ICE Restart:", err);
+                    hangUp();
+                }
+            } else {
+                hangUp();
+            }
+        }
     };
     // +===== DIAGNOSTICS ends
     pc.onicecandidate = (event) => {
@@ -692,9 +537,10 @@ async function createPeerConnection() {
         remoteAudioElement = new Audio();
         remoteAudioElement.srcObject = event.streams[0];
         remoteAudioElement.autoplay = true;
-        remoteAudioElement.play().catch((e) =>
-            console.log("Autoplay blocked", e)
-        );
+        remoteAudioElement.play().catch((e) => {
+            console.log("Autoplay blocked", e);
+            alert("Нажмите 'ОК', чтобы разрешить звук в браузере");
+        });
 
         if (audioContext && audioContext.state !== "closed") {
             remoteAnalyser = audioContext.createAnalyser();
@@ -838,10 +684,21 @@ function onCallConnected() {
 function hangUp() {
     if (callState === "IDLE") return;
 
-    if (signalingSocket && currentCallTarget) {
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
+
+    // Проверяем, что сокет не просто существует, но и ОТКРЫТ
+    if (
+        signalingSocket && signalingSocket.readyState === WebSocket.OPEN &&
+        currentCallTarget
+    ) {
         signalingSocket.send(
             JSON.stringify({ type: "call_end", target: currentCallTarget }),
         );
+    } else {
+        console.warn("[Signal] Не удалось отправить call_end — нет сети.");
     }
 
     callState = "IDLE";
@@ -883,22 +740,51 @@ function cleanupPeerConnection() {
 // ========== СИГНАЛИНГ (WebSocket) ==========
 
 function connectSignaling(token) {
+    if (pingInterval) clearInterval(pingInterval);
     signalingSocket = new WebSocket(
         `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
 
-    signalingSocket.onopen = () => console.log("[Signal] Connected as", token);
+    signalingSocket.onopen = () => {
+        console.log("[Signal] Connected as", token);
+
+        pingInterval = setInterval(() => {
+            if (signalingSocket.readyState === WebSocket.OPEN) {
+                signalingSocket.send(JSON.stringify({ type: "ping" }));
+            }
+        }, 20000);
+    };
 
     signalingSocket.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
+
+        if (msg.type === "pong") return;
+
         await handleSignalingMessage(msg);
     };
 
     signalingSocket.onclose = () => {
-        console.log("[Signal] Disconnected");
-        if (callState !== "IDLE") hangUp();
-    };
+        clearInterval(pingInterval);
+        console.log(
+            `[Signal] Disconnected. Code ${event.code}, Reason: ${event.reason}`,
+        );
+        if (event.code === 1006) {
+            console.warn("proxy (1006)");
+        }
+        if (callState !== "IDLE" && callState !== "CONNECTED") {
+            hangUp();
+        } else if (callState === "CONNECTED") {
+            const statusEl = document.getElementById("call-status");
+            if (statusEl) statusEl.innerText = "Webscoket пересоединяем";
+        }
 
+        setTimeout(() => {
+            const session = JSON.parse(
+                localStorage.getItem("agora_session") || "{}",
+            );
+            if (session.token) connectSignaling(session.token);
+        }, 3000);
+    };
     signalingSocket.onerror = (err) => console.error("[Signal] Error", err);
 }
 
@@ -948,8 +834,39 @@ async function handleSignalingMessage(msg) {
         }
 
         case "offer": {
-            if (callState === "AWAITING_OFFER") {
-                // Мы уже нажали ANSWER и ждали — обрабатываем мгновенно
+            if (callState === "CONNECTED") {
+                // ЭТО ICE RESTART ОТ СОБЕСЕДНИКА (ОН СМЕНИЛ СЕТЬ)
+                console.log(
+                    "[ICE] Получен запрос на переподключение сети от собеседника!",
+                );
+                updateCallUI(
+                    "RECONNECTING...",
+                    "btn-vosklet",
+                    "SYNC...",
+                    "#ff9900",
+                    true,
+                );
+
+                await pc.setRemoteDescription(
+                    new RTCSessionDescription({ type: "offer", sdp: msg.sdp }),
+                );
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                signalingSocket.send(JSON.stringify({
+                    type: "answer",
+                    target: currentCallTarget,
+                    sdp: pc.localDescription.sdp,
+                }));
+
+                updateCallUI(
+                    "END CALL",
+                    "btn-red",
+                    "CONNECTED",
+                    "#4aff4a",
+                    false,
+                );
+            } else if (callState === "AWAITING_OFFER") {
                 await processOfferAndAnswer(msg.sdp);
             } else if (callState === "IDLE" || callState === "RINGING_IN") {
                 // Оффер пришел ДО того, как пользователь нажал ANSWER
@@ -983,6 +900,13 @@ async function handleSignalingMessage(msg) {
         }
 
         case "candidate": {
+            // Игнорируем запоздалые пакеты от старых сессий, если мы уже в IDLE
+            if (callState === "IDLE") {
+                console.log(
+                    "[Signal] Проигнорирован запоздалый кандидат (мы уже оффлайн)",
+                );
+                return;
+            }
             if (pc) await addIceCandidate(msg.candidate);
             break;
         }
@@ -1158,6 +1082,278 @@ if ("serviceWorker" in navigator) {
         );
     });
 }
+// ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========
+navigator.mediaDevices.addEventListener("devicechange", async () => {
+    console.log("[Audio] Обнаружено изменение аудиоустройств!");
+
+    // Делаем что-то только если звонок активен
+    if (callState === "CONNECTED" && pc && localStream) {
+        try {
+            // Запрашиваем новый микрофон (браузер сам выберет активный по умолчанию)
+            const newStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            });
+
+            const newTrack = newStream.getAudioTracks()[0];
+
+            // Находим текущий аудио-поток, который отправляется собеседнику
+            const sender = pc.getSenders().find((s) =>
+                s.track?.kind === "audio"
+            );
+
+            if (sender) {
+                // Горячая замена трека БЕЗ перезапуска звонка (без ICE Restart)
+                await sender.replaceTrack(newTrack);
+
+                // Обновляем наш локальный анализатор для визуализации волн
+                localStream.getTracks().forEach((t) => t.stop()); // гасим старый микрофон
+                localStream = newStream;
+
+                if (audioContext && audioContext.state !== "closed") {
+                    // Переподключаем визуализацию к новому микрофону
+                    const source = audioContext.createMediaStreamSource(
+                        localStream,
+                    );
+                    source.connect(localAnalyser);
+                }
+                console.log("[Audio] Микрофон успешно переключен на лету!");
+            }
+        } catch (e) {
+            console.error("[Audio] Ошибка при смене аудиоустройства:", e);
+        }
+    }
+});
+import os
+import json
+import asyncio
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+load_dotenv()
+
+app = FastAPI()
+
+base_path = os.path.dirname(os.path.realpath('main.py'))
+
+
+# Разрешаем корс 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins = ['*'],
+    allow_methods = ['*'],
+    allow_headers = ['*'],
+)
+
+class AuthRequest(BaseModel):
+    token: str
+
+
+# Заменяем старый ConnectionManager на UserManager
+class UserManager:
+    def __init__(self):
+        # user_id (role) → WebSocket
+        self.online: dict[str, WebSocket] = {}
+
+    async def connect_user(self, user_id: str, ws: WebSocket):
+        # Если уже был онлайн с другого устройства — отключаем старый
+        if user_id in self.online:
+            old_ws = self.online[user_id]
+            try:
+                await old_ws.close(code=4002, reason="replaced_by_new_session")
+            except:
+                pass
+        await ws.accept()
+        self.online[user_id] = ws
+
+    def disconnect_user(self, user_id: str):
+        self.online.pop(user_id, None)
+
+    def get_user_ws(self, user_id: str) -> WebSocket | None:
+        return self.online.get(user_id)
+
+user_manager = UserManager()
+
+# Проверка токена (используем ту же логику, что и в /auth/login)
+def get_user_from_token(token: str) -> dict | None:
+    users = json.loads(os.getenv("USERS_JSON", "{}"))
+    return users.get(token.lower().strip())
+
+# Функция получения конфига TURN для конкретной роли
+def get_ice_servers(role: str):
+    # Приводим роль к верхнему регистру для поиска в ENV 
+    env_prefix = role.split()[0].upper() 
+    
+    username = os.getenv(f"{env_prefix}_USER", "default_user")
+    credential = os.getenv(f"{env_prefix}_PASS", "default_pass")
+    domain = os.getenv("TURN")
+    
+    return [
+        { "urls": f"stun:stun.relay.metered.ca:80"},
+        {
+            "urls": [
+                f"turn:{domain}:80",
+                f"turn:{domain}:80?transport=tcp",
+                f"turn:{domain}:443",
+                f"turn:{domain}:443?transport=tcp"
+            ],
+            "username": username,
+            "credential": credential
+        },
+        {
+            "urls":f"turns:{domain}:443?transport=tcp",
+            "username": username,
+            "credential": credential
+        }
+    ]
+
+
+# Маршрутизация сообщений
+async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSocket):
+    msg_type = message.get("type")
+    
+    if msg_type == "call_request":
+        target = message["target"]
+        target_ws = user_manager.get_user_ws(target)
+        if target_ws:
+            # Пересылаем входящий вызов
+            await target_ws.send_json({
+                "type": "incoming_call",
+                "from": sender_id,
+                "room_id": f"{sender_id}_{target}"   # для совместимости, если нужно
+            })
+        else:
+            # Здесь будет отправка push (опционально)
+            # send_push(target, {...})
+            pass
+
+    elif msg_type == "accept_call":
+        target = message["target"]
+        target_ws = user_manager.get_user_ws(target)
+        if target_ws:
+            await target_ws.send_json({
+                "type": "start_offer",
+                "target": sender_id   # тому, кто звонил, говорим начинать
+            })
+
+    elif msg_type in ("offer", "answer", "candidate"):
+        target = message.get("target")
+        if target:
+            target_ws = user_manager.get_user_ws(target)
+            if target_ws:
+                # Добавляем поле from для идентификации отправителя
+                forwarded = {**message, "from": sender_id}
+                await target_ws.send_json(forwarded)
+
+    elif msg_type == "call_end":
+        target = message.get("target")
+        if target:
+            target_ws = user_manager.get_user_ws(target)
+            if target_ws:
+                await target_ws.send_json({"type": "peer_disconnected"})
+
+@app.post("/auth/login")
+async def login(data: AuthRequest):
+    token = data.token.lower().strip()
+    
+    users = json.loads(os.getenv("USERS_JSON","{}"))
+    user = users.get(token)
+    contacts = json.loads(os.getenv("ACCESS_MATRIX","{}"))
+    addressee = contacts.get(token)
+        
+    if not user:
+        raise HTTPException(status_code=401, detail="INVALID_TOKEN")
+            
+    return {
+        "status": "success",
+        "contacts": addressee,
+        "role": user["role"],
+        "display_name": user["display_name"]
+    }
+
+# Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
+@app.get("/ice-servers")
+async def get_ice_config(role: str="guest"):
+    try:
+        servers = get_ice_servers(role)
+        return {"iceServers": servers}
+    except Exception as e:  # обработаем случай ошибки чтения файла
+        print(f"error gen {e}")
+        return {"urls":[{"urls":"stun:stun.l.google.com:19302"}]}
+
+# WebSocket endpoint для сигнализации
+#@app.websocket("/ws/{room_id}")
+#async def websocket_endpoint(websocket: WebSocket, room_id: str):
+#    await manager.connect(room_id, websocket)
+#    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
+#    try:    
+#        if len(manager.rooms[room_id]) == 2:
+#            first = manager.rooms[room_id][0]
+#        # Первый клиент начинает offer по сигналу
+#            await first.send_json({"type": "start_offer"})
+#        while True:
+#            data = await websocket.receive_json()
+#            await manager.broadcast_json(room_id, websocket, data)
+#    except WebSocketDisconnect:
+#        manager.disconnect(room_id, websocket)
+#        await manager.broadcast_json(room_id, websocket, {"type":"peer_disconnected"})
+
+# Новый WebSocket endpoint
+@app.websocket("/ws")
+async def websocket_call(websocket: WebSocket, token: str = Query("guest")):
+    user_info = get_user_from_token(token)
+    if not user_info:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+    
+    user_id = user_info["role"]   
+    await user_manager.connect_user(user_id, websocket)
+    
+    try:
+        while True:
+            # Ждем сообщение от клиента. 
+            # Если тишина больше 40 секунд — считаем клиента мертвым (выключил интернет/телефон)
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=40.0)
+            except asyncio.TimeoutError:
+                print(f"[WS] Таймаут пинга от {user_id}. Убиваем зомби-соединение.")
+                break # Выходим из цикла, чтобы закрыть сокет и почистить словарь
+            
+            # Обработка пинга-понга (НЕ пускаем это в основную логику звонков)
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+                
+            # Если это не пинг — отправляем в основную маршрутизацию
+            await handle_signal_message(user_id, data, websocket)
+            
+    except WebSocketDisconnect:
+        # Клиент отключился нормально (например, закрыл вкладку)
+        pass
+    except Exception as e:
+        # Случайная ошибка (например, отправили кривой JSON)
+        print(f"[WS] Ошибка у {user_id}: {e}")
+    finally:
+        # Эта блочная выполнится В ЛЮБОМ СЛУЧАЕ (даже при таймауте)
+        user_manager.disconnect_user(user_id)
+
+
+@app.get("/index")
+async def getindex():
+    return FileResponse(os.path.join(base_path,'index.html'))
+
+app.mount("/static", StaticFiles(directory=base_path), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
         body, html {
             margin: 0;
             padding: 0;
@@ -1597,7 +1793,7 @@ if ("serviceWorker" in navigator) {
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v21";
+const CACHE_NAME = "agora-hub-v23";
 const ASSETS = [
   "./",
   "./index.html",
@@ -1669,3 +1865,29 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+{
+  "name": "AGORA HUB",
+  "short_name": "AGORA",
+  "description": "Децентрализованный хаб для связи и обмена",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "communication"],
+  "lang": "ru"
+}

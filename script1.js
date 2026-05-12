@@ -28,6 +28,8 @@ let iceConfig = [];
 let iceQueue = [];
 let remoteAudioElement = null;
 let pendingOfferSdp = null; // Хранилище входящего оффера
+let pingInterval = null;
+let reconnectTimeout = null; // Таймер автосброса при обрыве
 
 // Аудио визуализация
 let audioContext = null;
@@ -314,12 +316,84 @@ async function createPeerConnection() {
         );
     };
 
-    pc.oniceconnectionstatechange = () => {
-        console.log(
-            `[ICE] connection state → ${pc.iceConnectionState} (через ${
-                ((performance.now() - startTime) / 1000).toFixed(1)
-            }s)`,
-        );
+    pc.oniceconnectionstatechange = async () => {
+        console.log(`[ICE] connection state → ${pc.iceConnectionState}`);
+
+        // 1. ЕСЛИ СВЯЗЬ ВОССТАНОВИЛАСЬ
+        if (
+            pc.iceConnectionState === "connected" ||
+            pc.iceConnectionState === "completed"
+        ) {
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout); // Выключаем таймер смерти
+                reconnectTimeout = null;
+                updateCallUI(
+                    "END CALL",
+                    "btn-red",
+                    "CONNECTED",
+                    "#4aff4a",
+                    false,
+                );
+                console.log("[ICE] Переподключение успешно завершено!");
+            }
+        }
+
+        // 2. ЕСЛИ СВЯЗЬ РАЗОРВАЛАСЬ (Смена сети, метро, сел телефон)
+        if (
+            pc.iceConnectionState === "disconnected" ||
+            pc.iceConnectionState === "failed"
+        ) {
+            if (callState === "CONNECTED") {
+                console.log(
+                    "[ICE] Смена сети или обрыв! Запуск ICE Restart...",
+                );
+                updateCallUI(
+                    "RECONNECTING...",
+                    "btn-vosklet",
+                    "RECONNECTING",
+                    "#ff9900",
+                    true,
+                );
+
+                // --- ЗАПУСКАЕМ ТАЙМЕР СМЕРТИ ЗВОНКА (40 секунд) ---
+                if (!reconnectTimeout) {
+                    reconnectTimeout = setTimeout(() => {
+                        console.log(
+                            "[ICE] Время на переподключение вышло. Сбрасываем звонок.",
+                        );
+                        hangUp();
+                        // Слегка меняем текст после hangUp, чтобы было понятно, почему сбросилось
+                        updateCallUI(
+                            "CALL",
+                            "btn-green",
+                            "CONNECTION LOST",
+                            "#ff4a4a",
+                            false,
+                        );
+                    }, 40000);
+                }
+
+                try {
+                    // Создаем оффер с флагом iceRestart
+                    const offer = await pc.createOffer({ iceRestart: true });
+                    await pc.setLocalDescription(offer);
+
+                    // Отправляем собеседнику
+                    if (signalingSocket?.readyState === WebSocket.OPEN) {
+                        signalingSocket.send(JSON.stringify({
+                            type: "offer",
+                            target: currentCallTarget,
+                            sdp: pc.localDescription.sdp,
+                        }));
+                    }
+                } catch (err) {
+                    console.error("Ошибка ICE Restart:", err);
+                    hangUp();
+                }
+            } else {
+                hangUp();
+            }
+        }
     };
     // +===== DIAGNOSTICS ends
     pc.onicecandidate = (event) => {
@@ -497,10 +571,21 @@ function onCallConnected() {
 function hangUp() {
     if (callState === "IDLE") return;
 
-    if (signalingSocket && currentCallTarget) {
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
+
+    // Проверяем, что сокет не просто существует, но и ОТКРЫТ
+    if (
+        signalingSocket && signalingSocket.readyState === WebSocket.OPEN &&
+        currentCallTarget
+    ) {
         signalingSocket.send(
             JSON.stringify({ type: "call_end", target: currentCallTarget }),
         );
+    } else {
+        console.warn("[Signal] Не удалось отправить call_end — нет сети.");
     }
 
     callState = "IDLE";
@@ -542,22 +627,51 @@ function cleanupPeerConnection() {
 // ========== СИГНАЛИНГ (WebSocket) ==========
 
 function connectSignaling(token) {
+    if (pingInterval) clearInterval(pingInterval);
     signalingSocket = new WebSocket(
         `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
 
-    signalingSocket.onopen = () => console.log("[Signal] Connected as", token);
+    signalingSocket.onopen = () => {
+        console.log("[Signal] Connected as", token);
+
+        pingInterval = setInterval(() => {
+            if (signalingSocket.readyState === WebSocket.OPEN) {
+                signalingSocket.send(JSON.stringify({ type: "ping" }));
+            }
+        }, 20000);
+    };
 
     signalingSocket.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
+
+        if (msg.type === "pong") return;
+
         await handleSignalingMessage(msg);
     };
 
     signalingSocket.onclose = () => {
-        console.log("[Signal] Disconnected");
-        if (callState !== "IDLE") hangUp();
-    };
+        clearInterval(pingInterval);
+        console.log(
+            `[Signal] Disconnected. Code ${event.code}, Reason: ${event.reason}`,
+        );
+        if (event.code === 1006) {
+            console.warn("proxy (1006)");
+        }
+        if (callState !== "IDLE" && callState !== "CONNECTED") {
+            hangUp();
+        } else if (callState === "CONNECTED") {
+            const statusEl = document.getElementById("call-status");
+            if (statusEl) statusEl.innerText = "Webscoket пересоединяем";
+        }
 
+        setTimeout(() => {
+            const session = JSON.parse(
+                localStorage.getItem("agora_session") || "{}",
+            );
+            if (session.token) connectSignaling(session.token);
+        }, 3000);
+    };
     signalingSocket.onerror = (err) => console.error("[Signal] Error", err);
 }
 
@@ -607,8 +721,39 @@ async function handleSignalingMessage(msg) {
         }
 
         case "offer": {
-            if (callState === "AWAITING_OFFER") {
-                // Мы уже нажали ANSWER и ждали — обрабатываем мгновенно
+            if (callState === "CONNECTED") {
+                // ЭТО ICE RESTART ОТ СОБЕСЕДНИКА (ОН СМЕНИЛ СЕТЬ)
+                console.log(
+                    "[ICE] Получен запрос на переподключение сети от собеседника!",
+                );
+                updateCallUI(
+                    "RECONNECTING...",
+                    "btn-vosklet",
+                    "SYNC...",
+                    "#ff9900",
+                    true,
+                );
+
+                await pc.setRemoteDescription(
+                    new RTCSessionDescription({ type: "offer", sdp: msg.sdp }),
+                );
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                signalingSocket.send(JSON.stringify({
+                    type: "answer",
+                    target: currentCallTarget,
+                    sdp: pc.localDescription.sdp,
+                }));
+
+                updateCallUI(
+                    "END CALL",
+                    "btn-red",
+                    "CONNECTED",
+                    "#4aff4a",
+                    false,
+                );
+            } else if (callState === "AWAITING_OFFER") {
                 await processOfferAndAnswer(msg.sdp);
             } else if (callState === "IDLE" || callState === "RINGING_IN") {
                 // Оффер пришел ДО того, как пользователь нажал ANSWER
@@ -642,6 +787,13 @@ async function handleSignalingMessage(msg) {
         }
 
         case "candidate": {
+            // Игнорируем запоздалые пакеты от старых сессий, если мы уже в IDLE
+            if (callState === "IDLE") {
+                console.log(
+                    "[Signal] Проигнорирован запоздалый кандидат (мы уже оффлайн)",
+                );
+                return;
+            }
             if (pc) await addIceCandidate(msg.candidate);
             break;
         }
@@ -817,3 +969,48 @@ if ("serviceWorker" in navigator) {
         );
     });
 }
+// ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========
+navigator.mediaDevices.addEventListener("devicechange", async () => {
+    console.log("[Audio] Обнаружено изменение аудиоустройств!");
+
+    // Делаем что-то только если звонок активен
+    if (callState === "CONNECTED" && pc && localStream) {
+        try {
+            // Запрашиваем новый микрофон (браузер сам выберет активный по умолчанию)
+            const newStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            });
+
+            const newTrack = newStream.getAudioTracks()[0];
+
+            // Находим текущий аудио-поток, который отправляется собеседнику
+            const sender = pc.getSenders().find((s) =>
+                s.track?.kind === "audio"
+            );
+
+            if (sender) {
+                // Горячая замена трека БЕЗ перезапуска звонка (без ICE Restart)
+                await sender.replaceTrack(newTrack);
+
+                // Обновляем наш локальный анализатор для визуализации волн
+                localStream.getTracks().forEach((t) => t.stop()); // гасим старый микрофон
+                localStream = newStream;
+
+                if (audioContext && audioContext.state !== "closed") {
+                    // Переподключаем визуализацию к новому микрофону
+                    const source = audioContext.createMediaStreamSource(
+                        localStream,
+                    );
+                    source.connect(localAnalyser);
+                }
+                console.log("[Audio] Микрофон успешно переключен на лету!");
+            }
+        } catch (e) {
+            console.error("[Audio] Ошибка при смене аудиоустройства:", e);
+        }
+    }
+});
