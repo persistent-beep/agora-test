@@ -212,6 +212,12 @@ function initCallInterface(name) {
     currentCallTarget = name.trim();
     moduleTitle.innerText = name;
 
+    if (currentUIState !== "CONTENT") {
+        currentUIState = "CONTENT";
+        menu.classList.remove("menu-visible");
+        setTimeout(() => contentArea.classList.add("content-visible"), 300);
+    }
+
     if (!callTemplateCache) {
         callTemplateCache =
             document.getElementById("template-call-ui").innerHTML;

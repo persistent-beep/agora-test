@@ -325,6 +325,12 @@ function initCallInterface(name) {
     currentCallTarget = name.trim();
     moduleTitle.innerText = name;
 
+    if (currentUIState !== "CONTENT") {
+        currentUIState = "CONTENT";
+        menu.classList.remove("menu-visible");
+        setTimeout(() => contentArea.classList.add("content-visible"), 300);
+    }
+
     if (!callTemplateCache) {
         callTemplateCache =
             document.getElementById("template-call-ui").innerHTML;
@@ -1793,7 +1799,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v23";
+const CACHE_NAME = "agora-hub-v24";
 const ASSETS = [
   "./",
   "./index.html",
