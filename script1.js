@@ -228,6 +228,7 @@ function initCallInterface(name) {
     moduleTitle.innerText = name;
 
     logo.className = "logo-side";
+    currentUIState = "CONTENT";
 
     if (currentUIState !== "CONTENT") {
         currentUIState = "CONTENT";
