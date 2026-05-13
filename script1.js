@@ -227,6 +227,8 @@ function initCallInterface(name) {
     currentCallTarget = name.trim();
     moduleTitle.innerText = name;
 
+    logo.className = "logo-side";
+
     if (currentUIState !== "CONTENT") {
         currentUIState = "CONTENT";
         menu.classList.remove("menu-visible");

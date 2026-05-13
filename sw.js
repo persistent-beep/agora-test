@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v29";
+const CACHE_NAME = "agora-hub-v30";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,7 +7,20 @@ const ASSETS = [
   "./logo.png",
   "./manifest.json",
 ];
-
+const options = {
+  body: payload.body,
+  icon: "./icons/icon-192.png",
+  badge: "./icons/icon-192.png",
+  vibrate: [200, 100, 200, 100, 200, 100, 200],
+  requireInteraction: true,
+  silent: false, // ← важно
+  sound: "default", // ← системный звук уведомления
+  data: { caller: payload.caller },
+  actions: [
+    { action: "answer", title: "🟢 Принять" },
+    { action: "decline", title: "🔴 Отклонить" },
+  ],
+};
 // 1. При установке кэшируем основные файлы (App Shell)
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -106,14 +119,15 @@ self.addEventListener("notificationclick", function (event) {
   // Если нажали "Отклонить" — просто тихо гасим (на сервер ничего не шлем,
   // звонящий сам отвалится по таймеру 40 сек, который мы делали ранее)
   if (action === "decline") return;
-
+  const urlToOpen = `/?call=${caller}`;
   // Если кликнули на пуш или "Принять" — ОТКРЫВАЕМ ПРИЛОЖЕНИЕ
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(
       (clientList) => {
         // 1. Ищем, есть ли уже открытая вкладка с хабом (даже если свернута)
         for (const client of clientList) {
-          if (client.url.includes("/") && "focus" in client) {
+          //if (client.url.includes("/") && "focus" in client) {
+          if (client.url.includes(self.location.origin) && "focus" in client) {
             client.focus();
             // Шлем сообщение в script1.js
             client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
@@ -123,7 +137,9 @@ self.addEventListener("notificationclick", function (event) {
         // 2. Если приложение полностью закрыто (убито в памяти), открываем заново
         // и передаем caller через URL параметр, чтобы скрипт сразу открыл звонок
         if (clients.openWindow) {
-          return clients.openWindow(`/?call=${caller}`);
+          //          return clients.openWindow(`/?call=${caller}`);
+
+          return clients.openWindow(urlToOpen);
         }
       },
     ),
