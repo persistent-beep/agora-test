@@ -1131,7 +1131,11 @@ window.addEventListener("load", () => {
         navigator.serviceWorker.register("./sw.js").catch((e) =>
             console.error("[SW] Error:", e)
         );
-
+        navigator.serviceWorker.ready.then((registration) => {
+            setInterval(() => {
+                registration.update();
+            }, 15000);
+        });
         // Ловим WAKE_UP_CALL (если приложение УЖЕ БЫЛО открыто, но висело в фоне)
         navigator.serviceWorker.addEventListener("message", (event) => {
             if (event.data && event.data.type === "WAKE_UP_CALL") {

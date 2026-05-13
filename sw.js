@@ -104,7 +104,7 @@ self.addEventListener("notificationclick", function (event) {
       (clientList) => {
         for (const client of clientList) {
           if (
-            client.url.startsWith(self.registration.scope) && "focus" in client
+            client.url.includes("agora-test") && "focus" in client
           ) {
             return client.focus().then(() => {
               client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
