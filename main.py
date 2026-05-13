@@ -28,6 +28,9 @@ app.add_middleware(
 class AuthRequest(BaseModel):
     token: str
 
+class PushSubscriptionRequest(BaseModel):
+    subscription: dict
+
 # BIHSLdqb6TI9eFBKl5bCV2-WTTLVpXxoluqhudCaxFktv19Z_mKz39KjRTvBOG4dBgBDpyOzlvc8MGjr3QD0Ko8
 
 # Настройки Supabase и VAPID из .env
@@ -98,19 +101,43 @@ def get_ice_servers(role: str):
     ]
 
 # Эндпоинт для сохранения подписки от браузера
+#@app.post("/push/subscribe")
+#async def save_push_subscription(data: dict, token: str = Query(...)):
+#    user_info = get_user_from_token(token)
+#    if not user_info:
+#        raise HTTPException(status_code=401)
+#    
+#    # Сохраняем в Supabase (upsert, чтобы не дублировать)
+#    supabase.table("push_subs").upsert({
+#        "user_id": user_info["role"],
+#        "sub_data": data["subscription"]
+#    }).execute()
+#    return {"status": "ok"}
 @app.post("/push/subscribe")
-async def save_push_subscription(data: dict, token: str = Query(...)):
+async def save_push_subscription(data: PushSubscriptionRequest, token: str = Query(...)):
     user_info = get_user_from_token(token)
     if not user_info:
-        raise HTTPException(status_code=401)
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    # Сохраняем в Supabase (upsert, чтобы не дублировать)
-    supabase.table("push_subs").upsert({
-        "user_id": user_info["role"],
-        "sub_data": data["subscription"]
-    }).execute()
-    return {"status": "ok"}
-
+    try:
+        sub_data = data.subscription
+        res = supabase.table("push_subs").upsert({
+            "user_id": user_info["role"],
+            "sub_data": sub_data
+        }).execute()
+        
+        # Проверяем, вернула ли Supabase ошибку (зависит от версии клиента)
+        if hasattr(res, 'error') and res.error:
+            error_detail = str(res.error)
+            print(f"[Push] Ошибка Supabase: {error_detail}")
+            raise HTTPException(status_code=500, detail=error_detail)
+            
+        return {"status": "ok"}
+    except HTTPException:
+        raise  # пробрасываем наши HTTP-ошибки как есть
+    except Exception as e:
+        print(f"[Push] Непредвиденная ошибка: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # Эндпоинт для удаления подписки при выходе из аккаунта
 @app.post("/push/unsubscribe")
 async def unsubscribe_push(data: dict, token: str = Query(...)):
