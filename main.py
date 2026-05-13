@@ -111,6 +111,25 @@ async def save_push_subscription(data: dict, token: str = Query(...)):
     }).execute()
     return {"status": "ok"}
 
+# Эндпоинт для удаления подписки при выходе из аккаунта
+@app.post("/push/unsubscribe")
+async def unsubscribe_push(data: dict, token: str = Query(...)):
+    user_info = get_user_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401)
+    
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Missing endpoint")
+    
+    # Удаляем запись из Supabase, где endpoint совпадает с тем, который прислал клиент
+    supabase.table("push_subs") \
+        .delete() \
+        .eq("sub_data->>endpoint", endpoint) \
+        .execute()
+        
+    return {"status": "ok"}
+
 # Маршрутизация сообщений
 async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSocket):
     msg_type = message.get("type")

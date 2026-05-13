@@ -314,8 +314,47 @@ async function subscribeToPush(token) {
     }
 }
 
-function handleLogout() {
+async function handleLogout() {
     if (signalingSocket) signalingSocket.close();
+
+    // --- ОТПИСКА ОТ PUSH ПРИ ВЫХОДЕ ---
+    if ("serviceWorker" in navigator) {
+        try {
+            const registration = await navigator.serviceWorker.ready;
+            const subscription = await registration.pushManager
+                .getSubscription();
+
+            if (subscription) {
+                const session = JSON.parse(
+                    localStorage.getItem("agora_session") || "{}",
+                );
+                if (session.token) {
+                    // Отправляем запрос на бэкенд, чтобы удалить подписку из Supabase
+                    await fetch(
+                        `${API_URL}/push/unsubscribe?token=${
+                            encodeURIComponent(session.token)
+                        }`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                endpoint: subscription.endpoint,
+                            }),
+                        },
+                    );
+                }
+                // Отписываем сам браузер
+                await subscription.unsubscribe();
+                console.log(
+                    "[Push] Успешно деактивировали пуши для этого устройства.",
+                );
+            }
+        } catch (e) {
+            console.error("[Push] Ошибка при деактивации пушей:", e);
+        }
+    }
+    // ----------------------------------
+
     localStorage.removeItem("agora_session");
     location.reload();
 }

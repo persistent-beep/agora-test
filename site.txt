@@ -385,6 +385,7 @@ async function handleAuthSubmit() {
 
             if (signalingSocket) signalingSocket.close();
             connectSignaling(tokenValue);
+            subscribeToPush();
             toMenu();
         } else {
             input.style.borderColor = "#ff4a4a";
@@ -426,8 +427,47 @@ async function subscribeToPush(token) {
     }
 }
 
-function handleLogout() {
+async function handleLogout() {
     if (signalingSocket) signalingSocket.close();
+
+    // --- ОТПИСКА ОТ PUSH ПРИ ВЫХОДЕ ---
+    if ("serviceWorker" in navigator) {
+        try {
+            const registration = await navigator.serviceWorker.ready;
+            const subscription = await registration.pushManager
+                .getSubscription();
+
+            if (subscription) {
+                const session = JSON.parse(
+                    localStorage.getItem("agora_session") || "{}",
+                );
+                if (session.token) {
+                    // Отправляем запрос на бэкенд, чтобы удалить подписку из Supabase
+                    await fetch(
+                        `${API_URL}/push/unsubscribe?token=${
+                            encodeURIComponent(session.token)
+                        }`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                endpoint: subscription.endpoint,
+                            }),
+                        },
+                    );
+                }
+                // Отписываем сам браузер
+                await subscription.unsubscribe();
+                console.log(
+                    "[Push] Успешно деактивировали пуши для этого устройства.",
+                );
+            }
+        } catch (e) {
+            console.error("[Push] Ошибка при деактивации пушей:", e);
+        }
+    }
+    // ----------------------------------
+
     localStorage.removeItem("agora_session");
     location.reload();
 }
@@ -1121,8 +1161,12 @@ window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
 
 window.addEventListener("load", () => {
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
-    if (session.token) connectSignaling(session.token);
-
+    if (session.token) {
+        connectSignaling(session.token);
+        if (Notification.permission === "granted") {
+            subscribeToPush(session.token);
+        }
+    }
     const urlParams = new URLSearchParams(window.location.search);
     const callerFromPush = urlParams.get("call");
 
@@ -1322,6 +1366,25 @@ async def save_push_subscription(data: dict, token: str = Query(...)):
         "user_id": user_info["role"],
         "sub_data": data["subscription"]
     }).execute()
+    return {"status": "ok"}
+
+# Эндпоинт для удаления подписки при выходе из аккаунта
+@app.post("/push/unsubscribe")
+async def unsubscribe_push(data: dict, token: str = Query(...)):
+    user_info = get_user_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401)
+    
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Missing endpoint")
+    
+    # Удаляем запись из Supabase, где endpoint совпадает с тем, который прислал клиент
+    supabase.table("push_subs") \
+        .delete() \
+        .eq("sub_data->>endpoint", endpoint) \
+        .execute()
+        
     return {"status": "ok"}
 
 # Маршрутизация сообщений
@@ -1925,7 +1988,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v24";
+const CACHE_NAME = "agora-hub-v26";
 const ASSETS = [
   "./",
   "./index.html",
