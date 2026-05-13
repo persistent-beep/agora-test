@@ -272,6 +272,7 @@ async function handleAuthSubmit() {
 
             if (signalingSocket) signalingSocket.close();
             connectSignaling(tokenValue);
+            subscribeToPush();
             toMenu();
         } else {
             input.style.borderColor = "#ff4a4a";
@@ -1008,8 +1009,12 @@ window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
 
 window.addEventListener("load", () => {
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
-    if (session.token) connectSignaling(session.token);
-
+    if (session.token) {
+        connectSignaling(session.token);
+        if (Notification.permission === "granted") {
+            subscribeToPush(session.token);
+        }
+    }
     const urlParams = new URLSearchParams(window.location.search);
     const callerFromPush = urlParams.get("call");
 
