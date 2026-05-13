@@ -118,26 +118,45 @@ async def save_push_subscription(data: PushSubscriptionRequest, token: str = Que
     user_info = get_user_from_token(token)
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid token")
-    
+
     try:
-        sub_data = data.subscription
-        res = supabase.table("push_subs").upsert({
-            "user_id": user_info["role"],
-            "sub_data": sub_data
-        }).execute()
-        
-        # Проверяем, вернула ли Supabase ошибку (зависит от версии клиента)
+        print(f"[Push] Сохраняю подписку для user_id={user_info['role']}")
+        # Попытка upsert с явным указанием конфликтной колонки (если она уникальна)
+        # Если user_id не уникален, вызовем ошибку, которую обработаем ниже
+        res = supabase.table("push_subs").upsert(
+            {
+                "user_id": user_info["role"],
+                "sub_data": data.subscription,
+            },
+            on_conflict="user_id",   # <-- укажите, если user_id уникален
+        ).execute()
+
+        # Проверка результата (зависит от версии supabase-py)
         if hasattr(res, 'error') and res.error:
-            error_detail = str(res.error)
-            print(f"[Push] Ошибка Supabase: {error_detail}")
-            raise HTTPException(status_code=500, detail=error_detail)
-            
+            raise Exception(f"Supabase error: {res.error}")
+        print("[Push] Успешно сохранено")
         return {"status": "ok"}
-    except HTTPException:
-        raise  # пробрасываем наши HTTP-ошибки как есть
+
     except Exception as e:
-        print(f"[Push] Непредвиденная ошибка: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Если on_conflict не сработал, попробуем без него
+        print(f"[Push] Первая попытка не удалась ({e}), пробую upsert без on_conflict")
+        try:
+            # Удаляем старую запись по user_id и вставляем новую
+            supabase.table("push_subs").delete().eq("user_id", user_info["role"]).execute()
+            res = supabase.table("push_subs").insert({
+                "user_id": user_info["role"],
+                "sub_data": data.subscription,
+            }).execute()
+            if hasattr(res, 'error') and res.error:
+                raise Exception(f"Supabase insert error: {res.error}")
+            print("[Push] Успешно сохранено (замена)")
+            return {"status": "ok"}
+        except Exception as inner_e:
+            print(f"[Push] Полная ошибка: {inner_e}")
+            import traceback
+            traceback.print_exc()
+            # Возвращаем ошибку с деталями в CORS-совместимом ответе
+            raise HTTPException(status_code=500, detail=f"Push subscription failed: {inner_e}")
 # Эндпоинт для удаления подписки при выходе из аккаунта
 @app.post("/push/unsubscribe")
 async def unsubscribe_push(data: dict, token: str = Query(...)):
