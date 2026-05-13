@@ -111,7 +111,7 @@ self.addEventListener("push", function (event) {
 
 // Ловим клик по уведомлению (или по кнопкам Принять/Отклонить)
 self.addEventListener("notificationclick", function (event) {
-  event.notification.close();
+  event.notification.close(); // Закрываем пуш
 
   const action = event.action;
   const payloadData = event.notification.data || {};
@@ -119,36 +119,30 @@ self.addEventListener("notificationclick", function (event) {
 
   if (action === "decline") return;
 
-  // Формируем надежный URL
-  const targetUrl = self.location.origin + "/?call=" +
+  // ИДЕАЛЬНЫЙ URL ДЛЯ GITHUB PAGES (с учетом папки /agora-test/)
+  // self.registration.scope вернет "https://persistent-beep.github.io/agora-test/"
+  const targetUrl = self.registration.scope + "?call=" +
     encodeURIComponent(caller);
 
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(
       (clientList) => {
         for (const client of clientList) {
-          if (client.url.includes(self.location.origin) && "focus" in client) {
+          // Ищем вкладку, которая начинается с правильного адреса
+          if (
+            client.url.startsWith(self.registration.scope) && "focus" in client
+          ) {
             return client.focus().then(() => {
               client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
             });
           }
         }
 
-        // Пытаемся открыть новое окно
+        // Открываем правильный URL внутри PWA
         if (clients.openWindow) {
           return clients.openWindow(targetUrl);
-        } else {
-          // Если API вообще недоступно
-          throw new Error("clients.openWindow is not supported");
         }
       },
-    ).catch((err) => {
-      // ОТЛАДКА: Если Android заблокировал запуск окна,
-      // мы выведем текст ошибки в виде нового пуша!
-      self.registration.showNotification("CRASH LOG", {
-        body: "Ошибка запуска: " + err.message,
-        icon: "./icons/icon-192.png",
-      });
-    }),
+    ).catch((err) => console.error("[SW] Ошибка клика:", err)),
   );
 });

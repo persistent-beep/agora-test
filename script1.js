@@ -224,32 +224,40 @@ function updateCallUI(
 }
 
 function initCallInterface(name) {
-    currentCallTarget = name.trim();
-    moduleTitle.innerText = name;
+    try {
+        currentCallTarget = name.trim();
+        moduleTitle.innerText = name;
+        currentUIState = "CONTENT";
 
-    currentUIState = "CONTENT";
+        // Получаем элементы
+        const logoEl = document.getElementById("logo");
+        const menuEl = document.getElementById("menu");
+        const contentEl = document.getElementById("content-area");
 
-    // Сразу и жестко задаем классы без лишних проверок
-    logo.className = "logo-side";
-    menu.classList.remove("menu-visible");
+        // 1. ЖЕСТКО сдвигаем логотип и прячем меню
+        logoEl.className = "logo-side";
+        menuEl.classList.remove("menu-visible");
 
-    if (!callTemplateCache) {
-        callTemplateCache =
-            document.getElementById("template-call-ui").innerHTML;
+        // 2. Вставляем HTML интерфейса звонка
+        if (!callTemplateCache) {
+            callTemplateCache =
+                document.getElementById("template-call-ui").innerHTML;
+        }
+        moduleContent.innerHTML = callTemplateCache;
+
+        // 3. Даем браузеру 50мс на рендер шаблона, затем показываем область
+        setTimeout(() => {
+            contentEl.classList.add("content-visible");
+            updateCanvasDimensions();
+        }, 50);
+
+        isMuted = false;
+        seconds = 0;
+        startWaveAnimation();
+    } catch (error) {
+        console.error("Ошибка при инициализации интерфейса:", error);
     }
-    moduleContent.innerHTML = callTemplateCache;
-
-    // Используем requestAnimationFrame, чтобы браузер гарантированно применил CSS
-    requestAnimationFrame(() => {
-        contentArea.classList.add("content-visible");
-        updateCanvasDimensions();
-    });
-
-    isMuted = false;
-    seconds = 0;
-    startWaveAnimation();
 }
-
 // ========== АВТОРИЗАЦИЯ ==========
 
 async function handleAuthSubmit() {
@@ -1105,7 +1113,10 @@ function startWaveAnimation() {
 
 window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
 
+// ========== ИНИЦИАЛИЗАЦИЯ И РАБОТА С PUSH ==========
+
 window.addEventListener("load", () => {
+    // 1. Подключаем сокеты, если юзер уже залогинен
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
     if (session.token) {
         connectSignaling(session.token);
@@ -1113,13 +1124,44 @@ window.addEventListener("load", () => {
             subscribeToPush(session.token);
         }
     }
+
+    // 2. Регистрируем Service Worker и слушаем от него команды
+    if ("serviceWorker" in navigator) {
+        // Регистрация
+        navigator.serviceWorker.register("./sw.js").catch((e) =>
+            console.error("[SW] Error:", e)
+        );
+
+        // Ловим WAKE_UP_CALL (если приложение УЖЕ БЫЛО открыто, но висело в фоне)
+        navigator.serviceWorker.addEventListener("message", (event) => {
+            if (event.data && event.data.type === "WAKE_UP_CALL") {
+                const caller = event.data.caller;
+                console.log(`[Push] Проснулись от звонка от ${caller}`);
+
+                initCallInterface(caller);
+                callState = "RINGING_IN";
+                updateCallUI(
+                    "ANSWER",
+                    "btn-green",
+                    "INCOMING CALL",
+                    "#ff9900",
+                    false,
+                );
+            }
+        });
+    }
+
+    // 3. Обработка холодного старта из Push-уведомления (если приложение было убито)
     const urlParams = new URLSearchParams(window.location.search);
     const callerFromPush = urlParams.get("call");
 
     if (callerFromPush) {
-        document.body.classList.add("force-call-ui");
-        // Очищаем URL (убираем ?call=... из адресной строки), чтобы не звонило повторно при F5
-        window.history.replaceState({}, document.title, "/");
+        // Очищаем URL от ?call=..., НО сохраняем правильную папку (например, /agora-test/)
+        window.history.replaceState(
+            {},
+            document.title,
+            window.location.pathname,
+        );
 
         // Разворачиваем интерфейс звонка
         initCallInterface(callerFromPush);
@@ -1128,35 +1170,15 @@ window.addEventListener("load", () => {
     }
 });
 
-// PWA Registration
-if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js").catch((e) =>
-            console.error("[SW] Error:", e)
+// Добавляем восстановление интерфейса, если пользователь просто свернул и развернул приложение
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentUIState === "CONTENT") {
+        document.getElementById("logo").className = "logo-side";
+        document.getElementById("content-area").classList.add(
+            "content-visible",
         );
-    });
-}
-
-if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.addEventListener("message", (event) => {
-        if (event.data && event.data.type === "WAKE_UP_CALL") {
-            const caller = event.data.caller;
-            console.log(`[Push] Проснулись от звонка от ${caller}`);
-
-            // Если WebSocket спал, он сам переподключится.
-            // Мы принудительно открываем интерфейс звонка.
-            initCallInterface(caller);
-            callState = "RINGING_IN";
-            updateCallUI(
-                "ANSWER",
-                "btn-green",
-                "INCOMING CALL",
-                "#ff9900",
-                false,
-            );
-        }
-    });
-}
+    }
+});
 // ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========
 navigator.mediaDevices.addEventListener("devicechange", async () => {
     console.log("[Audio] Обнаружено изменение аудиоустройств!");
