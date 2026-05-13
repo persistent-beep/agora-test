@@ -285,36 +285,89 @@ async function handleAuthSubmit() {
     }
 }
 
+//async function subscribeToPush(token) {
+//    if (!token || token === "guest") return;
+//    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+//
+//    // Запрашиваем права
+//    const permission = await Notification.requestPermission();
+//    if (permission !== "granted") return;
+//
+//    try {
+//        const registration = await navigator.serviceWorker.ready;
+//        const subscription = await registration.pushManager.subscribe({
+//            userVisibleOnly: true,
+//            applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
+//        });
+//
+//        // Отправляем подписку на ваш FastAPI сервер
+//        await fetch(
+//            `${API_URL}/push/subscribe?token=${encodeURIComponent(token)}`,
+//            {
+//                method: "POST",
+//                headers: { "Content-Type": "application/json" },
+//                body: JSON.stringify({ subscription: subscription }),
+//            },
+//        );
+//        console.log("[Push] Успешно подписаны на звонки!");
+//    } catch (e) {
+//        console.error("[Push] Ошибка подписки:", e);
+//    }
+//}
 async function subscribeToPush(token) {
-    if (!token || token === "guest") return;
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
-
-    // Запрашиваем права
-    const permission = await Notification.requestPermission();
-    if (permission !== "granted") return;
+    // Защита от отсутствия токена или гостевого входа
+    if (!token || token === "guest") {
+        console.warn(
+            "[Push] Пропускаем подписку (гостевой режим или нет токена)",
+        );
+        return;
+    }
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        console.warn("[Push] Браузер не поддерживает Push");
+        return;
+    }
 
     try {
+        // Ждём активации Service Worker
         const registration = await navigator.serviceWorker.ready;
+
+        // Удаляем старую подписку, чтобы не копились дубли
+        const existing = await registration.pushManager.getSubscription();
+        if (existing) await existing.unsubscribe();
+
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+            console.warn("[Push] Уведомления запрещены пользователем");
+            return;
+        }
+
         const subscription = await registration.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
         });
 
-        // Отправляем подписку на ваш FastAPI сервер
-        await fetch(
+        // Отправляем на сервер
+        const response = await fetch(
             `${API_URL}/push/subscribe?token=${encodeURIComponent(token)}`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ subscription: subscription }),
+                body: JSON.stringify({ subscription }),
             },
         );
-        console.log("[Push] Успешно подписаны на звонки!");
-    } catch (e) {
-        console.error("[Push] Ошибка подписки:", e);
+
+        if (response.ok) {
+            console.log("[Push] ✅ Успешно подписан на звонки");
+        } else {
+            console.error(
+                "[Push] ❌ Ошибка сохранения подписки, статус:",
+                response.status,
+            );
+        }
+    } catch (error) {
+        console.error("[Push] Ошибка подписки:", error);
     }
 }
-
 async function handleLogout() {
     if (signalingSocket) signalingSocket.close();
 
