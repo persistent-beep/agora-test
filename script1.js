@@ -1117,6 +1117,7 @@ window.addEventListener("load", () => {
     const callerFromPush = urlParams.get("call");
 
     if (callerFromPush) {
+        document.body.classList.add("force-call-ui");
         // Очищаем URL (убираем ?call=... из адресной строки), чтобы не звонило повторно при F5
         window.history.replaceState({}, document.title, "/");
 

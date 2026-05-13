@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v33";
+const CACHE_NAME = "agora-hub-v35";
 const ASSETS = [
   "./",
   "./index.html",
@@ -111,40 +111,44 @@ self.addEventListener("push", function (event) {
 
 // Ловим клик по уведомлению (или по кнопкам Принять/Отклонить)
 self.addEventListener("notificationclick", function (event) {
-  event.notification.close(); // Закрываем пуш
+  event.notification.close();
 
   const action = event.action;
-
-  // БЕЗОПАСНОЕ извлечение data. Если Android потерял data при клике на action, SW не упадет!
   const payloadData = event.notification.data || {};
   const caller = payloadData.caller || "unknown";
 
-  // Если нажали "Отклонить" — просто тихо гасим
   if (action === "decline") return;
 
-  // Формируем URL строго в рамках scope, чтобы Android открыл именно PWA
-  const baseUrl = self.registration.scope || (self.location.origin + "/");
-  const targetUrl = baseUrl + "?call=" + encodeURIComponent(caller);
+  // Формируем надежный URL
+  const targetUrl = self.location.origin + "/?call=" +
+    encodeURIComponent(caller);
 
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(
       (clientList) => {
-        // 1. Ищем, есть ли уже открытая вкладка с хабом
         for (const client of clientList) {
-          if (client.url.startsWith(baseUrl) && "focus" in client) {
+          if (client.url.includes(self.location.origin) && "focus" in client) {
             return client.focus().then(() => {
               client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
             });
           }
         }
 
-        // 2. Если приложение полностью закрыто, открываем заново с нужным URL
+        // Пытаемся открыть новое окно
         if (clients.openWindow) {
           return clients.openWindow(targetUrl);
+        } else {
+          // Если API вообще недоступно
+          throw new Error("clients.openWindow is not supported");
         }
       },
     ).catch((err) => {
-      console.error("[SW] Notification click error:", err);
+      // ОТЛАДКА: Если Android заблокировал запуск окна,
+      // мы выведем текст ошибки в виде нового пуша!
+      self.registration.showNotification("CRASH LOG", {
+        body: "Ошибка запуска: " + err.message,
+        icon: "./icons/icon-192.png",
+      });
     }),
   );
 });

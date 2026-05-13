@@ -437,3 +437,18 @@
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
+/* ЖЕСТКИЙ ФИКС ДЛЯ ХОЛОДНОГО СТАРТА */
+body.force-call-ui #logo {
+    transform: translateX(-35vw) scale(0.45) !important;
+    border-color: #444 !important;
+    transition: none !important; 
+}
+body.force-call-ui #menu {
+    display: none !important;
+}
+body.force-call-ui #content-area {
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: scale(1) !important;
+    transition: none !important;
+}
