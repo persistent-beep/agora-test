@@ -272,7 +272,7 @@ async function handleAuthSubmit() {
 
             if (signalingSocket) signalingSocket.close();
             connectSignaling(tokenValue);
-            subscribeToPush();
+            subscribeToPush(tokenValue);
             toMenu();
         } else {
             input.style.borderColor = "#ff4a4a";
@@ -286,6 +286,7 @@ async function handleAuthSubmit() {
 }
 
 async function subscribeToPush(token) {
+    if (!token || token === "guest") return;
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
 
     // Запрашиваем права
