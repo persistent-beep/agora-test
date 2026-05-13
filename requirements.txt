@@ -1,4 +1,6 @@
 fastapi
+supabase
+pywebpush
 uvicorn[standard]
 python-dotenv
 pydantic
