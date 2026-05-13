@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v31";
+const CACHE_NAME = "agora-hub-v32";
 const ASSETS = [
   "./",
   "./index.html",
@@ -119,7 +119,7 @@ self.addEventListener("notificationclick", function (event) {
   // Если нажали "Отклонить" — просто тихо гасим (на сервер ничего не шлем,
   // звонящий сам отвалится по таймеру 40 сек, который мы делали ранее)
   if (action === "decline") return;
-  const urlToOpen = `/?call=${caller}`;
+  const urlToOpen = new URL(`/?call=${caller}`, self.registration.scope).href;
   // Если кликнули на пуш или "Принять" — ОТКРЫВАЕМ ПРИЛОЖЕНИЕ
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(
