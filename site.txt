@@ -2126,7 +2126,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v35";
+const CACHE_NAME = "agora-hub-v36";
 const ASSETS = [
   "./",
   "./index.html",
@@ -2278,8 +2278,8 @@ self.addEventListener("notificationclick", function (event) {
   "name": "AGORA HUB",
   "short_name": "AGORA",
   "description": "Децентрализованный хаб для связи и обмена",
-  "start_url": "/",
-  "scope":"/",
+  "start_url": "./",
+  "scope":"./",
   "display": "standalone",
   "background_color": "#0a0a0a",
   "theme_color": "#0a0a0a",
