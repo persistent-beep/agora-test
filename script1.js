@@ -227,14 +227,11 @@ function initCallInterface(name) {
     currentCallTarget = name.trim();
     moduleTitle.innerText = name;
 
-    logo.className = "logo-side";
     currentUIState = "CONTENT";
 
-    if (currentUIState !== "CONTENT") {
-        currentUIState = "CONTENT";
-        menu.classList.remove("menu-visible");
-        setTimeout(() => contentArea.classList.add("content-visible"), 300);
-    }
+    // Сразу и жестко задаем классы без лишних проверок
+    logo.className = "logo-side";
+    menu.classList.remove("menu-visible");
 
     if (!callTemplateCache) {
         callTemplateCache =
@@ -242,9 +239,14 @@ function initCallInterface(name) {
     }
     moduleContent.innerHTML = callTemplateCache;
 
+    // Используем requestAnimationFrame, чтобы браузер гарантированно применил CSS
+    requestAnimationFrame(() => {
+        contentArea.classList.add("content-visible");
+        updateCanvasDimensions();
+    });
+
     isMuted = false;
     seconds = 0;
-    updateCanvasDimensions();
     startWaveAnimation();
 }
 
@@ -1196,6 +1198,16 @@ navigator.mediaDevices.addEventListener("devicechange", async () => {
             }
         } catch (e) {
             console.error("[Audio] Ошибка при смене аудиоустройства:", e);
+        }
+    }
+});
+// --- ИСПРАВЛЕНИЕ: Восстановление графики при выходе из фона ---
+document.addEventListener("visibilitychange", () => {
+    // Когда пользователь возвращается в приложение, если был звонок — заставляем DOM перерисоваться
+    if (!document.hidden) {
+        if (currentUIState === "CONTENT") {
+            logo.className = "logo-side";
+            contentArea.classList.add("content-visible");
         }
     }
 });

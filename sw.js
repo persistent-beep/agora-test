@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v32";
+const CACHE_NAME = "agora-hub-v33";
 const ASSETS = [
   "./",
   "./index.html",
@@ -114,43 +114,37 @@ self.addEventListener("notificationclick", function (event) {
   event.notification.close(); // Закрываем пуш
 
   const action = event.action;
-  const caller = event.notification.data.caller;
+
+  // БЕЗОПАСНОЕ извлечение data. Если Android потерял data при клике на action, SW не упадет!
+  const payloadData = event.notification.data || {};
+  const caller = payloadData.caller || "unknown";
 
   // Если нажали "Отклонить" — просто тихо гасим
   if (action === "decline") return;
 
-  // ИСПРАВЛЕНИЕ 1: Используем self.location.origin для формирования базового URL.
-  // Это надежнее, чем self.registration.scope, который может быть путем вроде /app/,
-  // и тогда результирующий URL будет /app/?call=..., что может сломать роутинг.
-  const urlToOpen = new URL(`/?call=${caller}`, self.location.origin).href;
+  // Формируем URL строго в рамках scope, чтобы Android открыл именно PWA
+  const baseUrl = self.registration.scope || (self.location.origin + "/");
+  const targetUrl = baseUrl + "?call=" + encodeURIComponent(caller);
 
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(
       (clientList) => {
         // 1. Ищем, есть ли уже открытая вкладка с хабом
         for (const client of clientList) {
-          // ИСПРАВЛЕНИЕ 2: Используем startsWith вместо includes.
-          // includes может сработать ложно, если на другом домене есть наш домен в пути.
-          // startsWith(self.location.origin) гарантирует, что мы нашли вкладку именно нашего приложения.
-          if (
-            client.url.startsWith(self.location.origin) && "focus" in client
-          ) {
-            // Сначала фокусируем вкладку, а потом шлем сообщение.
-            // Это гарантирует, что вкладка активна и готова принять postMessage.
+          if (client.url.startsWith(baseUrl) && "focus" in client) {
             return client.focus().then(() => {
               client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
             });
           }
         }
 
-        // 2. Если приложение полностью закрыто (убито в памяти), открываем заново
+        // 2. Если приложение полностью закрыто, открываем заново с нужным URL
         if (clients.openWindow) {
-          return clients.openWindow(urlToOpen);
+          return clients.openWindow(targetUrl);
         }
       },
     ).catch((err) => {
-      // ИСПРАВЛЕНИЕ 3: Добавляем обработку ошибок, чтобы видеть проблемы в консоли
-      console.error("SW: Notification click error:", err);
+      console.error("[SW] Notification click error:", err);
     }),
   );
 });
