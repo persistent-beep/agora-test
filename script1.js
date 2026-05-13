@@ -2,6 +2,8 @@
 const BACKEND_URL = "https://agora-service.onrender.com";
 const API_URL = BACKEND_URL;
 const WS_URL = BACKEND_URL.replace(/^http/, "ws");
+const PUBLIC_VAPID_KEY =
+    "BIHSLdqb6TI9eFBKl5bCV2-WTTLVpXxoluqhudCaxFktv19Z_mKz39KjRTvBOG4dBgBDpyOzlvc8MGjr3QD0Ko8";
 
 // Элементы UI
 const logo = document.getElementById("logo");
@@ -90,6 +92,19 @@ async function waitIceGathering(peerConnection) {
     });
 }
 
+function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(
+        /_/g,
+        "/",
+    );
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
 // ========== УПРАВЛЕНИЕ ИНТЕРФЕЙСОМ (UI) ==========
 
 function handleLogoClick() {
@@ -266,6 +281,35 @@ async function handleAuthSubmit() {
     } catch (error) {
         console.error("Auth error:", error);
         input.placeholder = "SERVER_OFFLINE";
+    }
+}
+
+async function subscribeToPush(token) {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+    // Запрашиваем права
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return;
+
+    try {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
+        });
+
+        // Отправляем подписку на ваш FastAPI сервер
+        await fetch(
+            `${API_URL}/push/subscribe?token=${encodeURIComponent(token)}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ subscription: subscription }),
+            },
+        );
+        console.log("[Push] Успешно подписаны на звонки!");
+    } catch (e) {
+        console.error("[Push] Ошибка подписки:", e);
     }
 }
 
@@ -965,6 +1009,19 @@ window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
 window.addEventListener("load", () => {
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
     if (session.token) connectSignaling(session.token);
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const callerFromPush = urlParams.get("call");
+
+    if (callerFromPush) {
+        // Очищаем URL (убираем ?call=... из адресной строки), чтобы не звонило повторно при F5
+        window.history.replaceState({}, document.title, "/");
+
+        // Разворачиваем интерфейс звонка
+        initCallInterface(callerFromPush);
+        callState = "RINGING_IN";
+        updateCallUI("ANSWER", "btn-green", "INCOMING CALL", "#ff9900", false);
+    }
 });
 
 // PWA Registration
@@ -973,6 +1030,27 @@ if ("serviceWorker" in navigator) {
         navigator.serviceWorker.register("./sw.js").catch((e) =>
             console.error("[SW] Error:", e)
         );
+    });
+}
+
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data && event.data.type === "WAKE_UP_CALL") {
+            const caller = event.data.caller;
+            console.log(`[Push] Проснулись от звонка от ${caller}`);
+
+            // Если WebSocket спал, он сам переподключится.
+            // Мы принудительно открываем интерфейс звонка.
+            initCallInterface(caller);
+            callState = "RINGING_IN";
+            updateCallUI(
+                "ANSWER",
+                "btn-green",
+                "INCOMING CALL",
+                "#ff9900",
+                false,
+            );
+        }
     });
 }
 // ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========

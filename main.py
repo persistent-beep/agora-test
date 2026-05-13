@@ -7,6 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from pywebpush import webpush, WebPushException
+from supabase import create_client, Client
 
 load_dotenv()
 
@@ -26,6 +28,16 @@ app.add_middleware(
 class AuthRequest(BaseModel):
     token: str
 
+# BIHSLdqb6TI9eFBKl5bCV2-WTTLVpXxoluqhudCaxFktv19Z_mKz39KjRTvBOG4dBgBDpyOzlvc8MGjr3QD0Ko8
+
+# Настройки Supabase и VAPID из .env
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
+VAPID_CLAIMS = {"sub": f"mailto:{os.getenv('VAPID_SUB_EMAIL')}"} 
+
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Заменяем старый ConnectionManager на UserManager
 class UserManager:
@@ -85,6 +97,19 @@ def get_ice_servers(role: str):
         }
     ]
 
+# Эндпоинт для сохранения подписки от браузера
+@app.post("/push/subscribe")
+async def save_push_subscription(data: dict, token: str = Query(...)):
+    user_info = get_user_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401)
+    
+    # Сохраняем в Supabase (upsert, чтобы не дублировать)
+    supabase.table("push_subs").upsert({
+        "user_id": user_info["role"],
+        "sub_data": data["subscription"]
+    }).execute()
+    return {"status": "ok"}
 
 # Маршрутизация сообщений
 async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSocket):
@@ -102,8 +127,31 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
             })
         else:
             # Здесь будет отправка push (опционально)
-            # send_push(target, {...})
-            pass
+            print(f"[PUSH] {target} оффлайн. Ищем подписку в БД...")
+            response = supabase.table("push_subs").select("sub_data").eq("user_id", target).execute()
+            
+            if response.data:
+                for row in response.data:
+                    sub_data = row["sub_data"]
+                    try:
+                        webpush(
+                            subscription_info=sub_data,
+                            data=json.dumps({
+                                "title": "Входящий вызов",
+                                "body": f"{sender_id} вызывает вас...",
+                                "caller": sender_id,
+                                "type": "INCOMING_CALL"
+                            }),
+                            vapid_private_key=VAPID_PRIVATE_KEY,
+                            vapid_claims=VAPID_CLAIMS
+                        )
+                        print(f"[PUSH] Уведомление отправлено {target}")
+                    except WebPushException as e:
+                        print(f"[PUSH] Ошибка отправки: {e}")
+                        # Если подписка устарела (код 410), можно удалить её из БД
+            else:
+                # Абонент вообще недоступен
+                await sender_ws.send_json({"type": "peer_disconnected"})
 
     elif msg_type == "accept_call":
         target = message["target"]

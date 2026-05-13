@@ -115,6 +115,8 @@
 const BACKEND_URL = "https://agora-service.onrender.com";
 const API_URL = BACKEND_URL;
 const WS_URL = BACKEND_URL.replace(/^http/, "ws");
+const PUBLIC_VAPID_KEY =
+    "BIHSLdqb6TI9eFBKl5bCV2-WTTLVpXxoluqhudCaxFktv19Z_mKz39KjRTvBOG4dBgBDpyOzlvc8MGjr3QD0Ko8";
 
 // Элементы UI
 const logo = document.getElementById("logo");
@@ -203,6 +205,19 @@ async function waitIceGathering(peerConnection) {
     });
 }
 
+function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(
+        /_/g,
+        "/",
+    );
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
 // ========== УПРАВЛЕНИЕ ИНТЕРФЕЙСОМ (UI) ==========
 
 function handleLogoClick() {
@@ -379,6 +394,35 @@ async function handleAuthSubmit() {
     } catch (error) {
         console.error("Auth error:", error);
         input.placeholder = "SERVER_OFFLINE";
+    }
+}
+
+async function subscribeToPush(token) {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+    // Запрашиваем права
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return;
+
+    try {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
+        });
+
+        // Отправляем подписку на ваш FastAPI сервер
+        await fetch(
+            `${API_URL}/push/subscribe?token=${encodeURIComponent(token)}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ subscription: subscription }),
+            },
+        );
+        console.log("[Push] Успешно подписаны на звонки!");
+    } catch (e) {
+        console.error("[Push] Ошибка подписки:", e);
     }
 }
 
@@ -1078,6 +1122,19 @@ window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
 window.addEventListener("load", () => {
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
     if (session.token) connectSignaling(session.token);
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const callerFromPush = urlParams.get("call");
+
+    if (callerFromPush) {
+        // Очищаем URL (убираем ?call=... из адресной строки), чтобы не звонило повторно при F5
+        window.history.replaceState({}, document.title, "/");
+
+        // Разворачиваем интерфейс звонка
+        initCallInterface(callerFromPush);
+        callState = "RINGING_IN";
+        updateCallUI("ANSWER", "btn-green", "INCOMING CALL", "#ff9900", false);
+    }
 });
 
 // PWA Registration
@@ -1086,6 +1143,27 @@ if ("serviceWorker" in navigator) {
         navigator.serviceWorker.register("./sw.js").catch((e) =>
             console.error("[SW] Error:", e)
         );
+    });
+}
+
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data && event.data.type === "WAKE_UP_CALL") {
+            const caller = event.data.caller;
+            console.log(`[Push] Проснулись от звонка от ${caller}`);
+
+            // Если WebSocket спал, он сам переподключится.
+            // Мы принудительно открываем интерфейс звонка.
+            initCallInterface(caller);
+            callState = "RINGING_IN";
+            updateCallUI(
+                "ANSWER",
+                "btn-green",
+                "INCOMING CALL",
+                "#ff9900",
+                false,
+            );
+        }
     });
 }
 // ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========
@@ -1142,6 +1220,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from pywebpush import webpush, WebPushException
+from supabase import create_client, Client
 
 load_dotenv()
 
@@ -1161,6 +1241,16 @@ app.add_middleware(
 class AuthRequest(BaseModel):
     token: str
 
+# BIHSLdqb6TI9eFBKl5bCV2-WTTLVpXxoluqhudCaxFktv19Z_mKz39KjRTvBOG4dBgBDpyOzlvc8MGjr3QD0Ko8
+
+# Настройки Supabase и VAPID из .env
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
+VAPID_CLAIMS = {"sub": f"mailto:{os.getenv('VAPID_SUB_EMAIL')}"} 
+
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Заменяем старый ConnectionManager на UserManager
 class UserManager:
@@ -1220,6 +1310,19 @@ def get_ice_servers(role: str):
         }
     ]
 
+# Эндпоинт для сохранения подписки от браузера
+@app.post("/push/subscribe")
+async def save_push_subscription(data: dict, token: str = Query(...)):
+    user_info = get_user_from_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401)
+    
+    # Сохраняем в Supabase (upsert, чтобы не дублировать)
+    supabase.table("push_subs").upsert({
+        "user_id": user_info["role"],
+        "sub_data": data["subscription"]
+    }).execute()
+    return {"status": "ok"}
 
 # Маршрутизация сообщений
 async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSocket):
@@ -1237,8 +1340,31 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
             })
         else:
             # Здесь будет отправка push (опционально)
-            # send_push(target, {...})
-            pass
+            print(f"[PUSH] {target} оффлайн. Ищем подписку в БД...")
+            response = supabase.table("push_subs").select("sub_data").eq("user_id", target).execute()
+            
+            if response.data:
+                for row in response.data:
+                    sub_data = row["sub_data"]
+                    try:
+                        webpush(
+                            subscription_info=sub_data,
+                            data=json.dumps({
+                                "title": "Входящий вызов",
+                                "body": f"{sender_id} вызывает вас...",
+                                "caller": sender_id,
+                                "type": "INCOMING_CALL"
+                            }),
+                            vapid_private_key=VAPID_PRIVATE_KEY,
+                            vapid_claims=VAPID_CLAIMS
+                        )
+                        print(f"[PUSH] Уведомление отправлено {target}")
+                    except WebPushException as e:
+                        print(f"[PUSH] Ошибка отправки: {e}")
+                        # Если подписка устарела (код 410), можно удалить её из БД
+            else:
+                # Абонент вообще недоступен
+                await sender_ws.send_json({"type": "peer_disconnected"})
 
     elif msg_type == "accept_call":
         target = message["target"]
@@ -1869,6 +1995,65 @@ self.addEventListener("fetch", (event) => {
         return networkResponse;
       });
     }),
+  );
+});
+// Ловим Push от сервера
+self.addEventListener("push", function (event) {
+  if (!event.data) return;
+
+  const payload = event.data.json();
+
+  if (payload.type === "INCOMING_CALL") {
+    const options = {
+      body: payload.body,
+      icon: "./icons/icon-192.png", // Ваша иконка
+      badge: "./icons/icon-192.png",
+      vibrate: [200, 100, 200, 100, 200, 100, 200], // Имитация звонка
+      requireInteraction: true, // Уведомление висит и не исчезает само
+      data: { caller: payload.caller },
+      actions: [
+        { action: "answer", title: "🟢 Принять" },
+        { action: "decline", title: "🔴 Отклонить" },
+      ],
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(payload.title, options),
+    );
+  }
+});
+
+// Ловим клик по уведомлению (или по кнопкам Принять/Отклонить)
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close(); // Закрываем пуш
+
+  const action = event.action;
+  const caller = event.notification.data.caller;
+
+  // Если нажали "Отклонить" — просто тихо гасим (на сервер ничего не шлем,
+  // звонящий сам отвалится по таймеру 40 сек, который мы делали ранее)
+  if (action === "decline") return;
+
+  // Если кликнули на пуш или "Принять" — ОТКРЫВАЕМ ПРИЛОЖЕНИЕ
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(
+      (clientList) => {
+        // 1. Ищем, есть ли уже открытая вкладка с хабом (даже если свернута)
+        for (const client of clientList) {
+          if (client.url.includes("/") && "focus" in client) {
+            client.focus();
+            // Шлем сообщение в script1.js
+            client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
+            return;
+          }
+        }
+        // 2. Если приложение полностью закрыто (убито в памяти), открываем заново
+        // и передаем caller через URL параметр, чтобы скрипт сразу открыл звонок
+        if (clients.openWindow) {
+          return clients.openWindow(`/?call=${caller}`);
+        }
+      },
+    ),
   );
 });
 {

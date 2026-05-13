@@ -70,3 +70,62 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+// Ловим Push от сервера
+self.addEventListener("push", function (event) {
+  if (!event.data) return;
+
+  const payload = event.data.json();
+
+  if (payload.type === "INCOMING_CALL") {
+    const options = {
+      body: payload.body,
+      icon: "./icons/icon-192.png", // Ваша иконка
+      badge: "./icons/icon-192.png",
+      vibrate: [200, 100, 200, 100, 200, 100, 200], // Имитация звонка
+      requireInteraction: true, // Уведомление висит и не исчезает само
+      data: { caller: payload.caller },
+      actions: [
+        { action: "answer", title: "🟢 Принять" },
+        { action: "decline", title: "🔴 Отклонить" },
+      ],
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(payload.title, options),
+    );
+  }
+});
+
+// Ловим клик по уведомлению (или по кнопкам Принять/Отклонить)
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close(); // Закрываем пуш
+
+  const action = event.action;
+  const caller = event.notification.data.caller;
+
+  // Если нажали "Отклонить" — просто тихо гасим (на сервер ничего не шлем,
+  // звонящий сам отвалится по таймеру 40 сек, который мы делали ранее)
+  if (action === "decline") return;
+
+  // Если кликнули на пуш или "Принять" — ОТКРЫВАЕМ ПРИЛОЖЕНИЕ
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(
+      (clientList) => {
+        // 1. Ищем, есть ли уже открытая вкладка с хабом (даже если свернута)
+        for (const client of clientList) {
+          if (client.url.includes("/") && "focus" in client) {
+            client.focus();
+            // Шлем сообщение в script1.js
+            client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
+            return;
+          }
+        }
+        // 2. Если приложение полностью закрыто (убито в памяти), открываем заново
+        // и передаем caller через URL параметр, чтобы скрипт сразу открыл звонок
+        if (clients.openWindow) {
+          return clients.openWindow(`/?call=${caller}`);
+        }
+      },
+    ),
+  );
+});
