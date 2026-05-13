@@ -116,32 +116,41 @@ self.addEventListener("notificationclick", function (event) {
   const action = event.action;
   const caller = event.notification.data.caller;
 
-  // Если нажали "Отклонить" — просто тихо гасим (на сервер ничего не шлем,
-  // звонящий сам отвалится по таймеру 40 сек, который мы делали ранее)
+  // Если нажали "Отклонить" — просто тихо гасим
   if (action === "decline") return;
-  const urlToOpen = new URL(`/?call=${caller}`, self.registration.scope).href;
-  // Если кликнули на пуш или "Принять" — ОТКРЫВАЕМ ПРИЛОЖЕНИЕ
+
+  // ИСПРАВЛЕНИЕ 1: Используем self.location.origin для формирования базового URL.
+  // Это надежнее, чем self.registration.scope, который может быть путем вроде /app/,
+  // и тогда результирующий URL будет /app/?call=..., что может сломать роутинг.
+  const urlToOpen = new URL(`/?call=${caller}`, self.location.origin).href;
+
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(
       (clientList) => {
-        // 1. Ищем, есть ли уже открытая вкладка с хабом (даже если свернута)
+        // 1. Ищем, есть ли уже открытая вкладка с хабом
         for (const client of clientList) {
-          //if (client.url.includes("/") && "focus" in client) {
-          if (client.url.includes(self.location.origin) && "focus" in client) {
-            client.focus();
-            // Шлем сообщение в script1.js
-            client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
-            return;
+          // ИСПРАВЛЕНИЕ 2: Используем startsWith вместо includes.
+          // includes может сработать ложно, если на другом домене есть наш домен в пути.
+          // startsWith(self.location.origin) гарантирует, что мы нашли вкладку именно нашего приложения.
+          if (
+            client.url.startsWith(self.location.origin) && "focus" in client
+          ) {
+            // Сначала фокусируем вкладку, а потом шлем сообщение.
+            // Это гарантирует, что вкладка активна и готова принять postMessage.
+            return client.focus().then(() => {
+              client.postMessage({ type: "WAKE_UP_CALL", caller: caller });
+            });
           }
         }
-        // 2. Если приложение полностью закрыто (убито в памяти), открываем заново
-        // и передаем caller через URL параметр, чтобы скрипт сразу открыл звонок
-        if (clients.openWindow) {
-          //          return clients.openWindow(`/?call=${caller}`);
 
+        // 2. Если приложение полностью закрыто (убито в памяти), открываем заново
+        if (clients.openWindow) {
           return clients.openWindow(urlToOpen);
         }
       },
-    ),
+    ).catch((err) => {
+      // ИСПРАВЛЕНИЕ 3: Добавляем обработку ошибок, чтобы видеть проблемы в консоли
+      console.error("SW: Notification click error:", err);
+    }),
   );
 });
