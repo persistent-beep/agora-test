@@ -1138,6 +1138,8 @@ window.addEventListener("load", () => {
         });
         // Ловим WAKE_UP_CALL (если приложение УЖЕ БЫЛО открыто, но висело в фоне)
         navigator.serviceWorker.addEventListener("message", (event) => {
+            if (!event.date) return;
+
             if (event.data && event.data.type === "WAKE_UP_CALL") {
                 const caller = event.data.caller;
                 console.log(`[Push] Проснулись от звонка от ${caller}`);
@@ -1150,6 +1152,22 @@ window.addEventListener("load", () => {
                     "INCOMING CALL",
                     "#ff9900",
                     false,
+                );
+            }
+            if (event.data.type === "CALL_DECLINED") {
+                console.log("[Push] Звонок был отклонен или сброшен");
+
+                // Сбрасываем глобальное состояние звонка
+                callState = "IDLE";
+
+                // Закрываем интерфейс звонка или обновляем UI на дефолтный
+                closeCallInterface();
+                updateCallUI(
+                    "CALL",
+                    "btn-blue",
+                    "READY",
+                    "#000000",
+                    true,
                 );
             }
         });
