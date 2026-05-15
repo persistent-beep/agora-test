@@ -1138,7 +1138,7 @@ window.addEventListener("load", () => {
         });
         // Ловим WAKE_UP_CALL (если приложение УЖЕ БЫЛО открыто, но висело в фоне)
         navigator.serviceWorker.addEventListener("message", (event) => {
-            if (!event.date) return;
+            if (!event.data) return;
 
             if (event.data && event.data.type === "WAKE_UP_CALL") {
                 const caller = event.data.caller;
