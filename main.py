@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -315,6 +315,19 @@ async def websocket_call(websocket: WebSocket, token: str = Query("guest")):
         # Эта блочная выполнится В ЛЮБОМ СЛУЧАЕ (даже при таймауте)
         user_manager.disconnect_user(user_id)
 
+@app.post("/debug/push-error")
+async def debug_push_error(request: Request):
+    try:
+        data = await request.json()
+        log_line = f"[PUSH_DEBUG] {json.dumps(data, ensure_ascii=False)}"
+        
+        # Этого достаточно для логов хостинга
+        print(log_line, flush=True)
+        
+        return {"status": "logged"}
+    except Exception as e:
+        print(f"[PUSH_DEBUG_ERROR] {e}", flush=True)
+        return {"status": "error"}
 
 @app.get("/index")
 async def getindex():

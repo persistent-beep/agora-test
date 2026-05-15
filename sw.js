@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v50";
+const CACHE_NAME = "agora-hub-v51";
 const ASSETS = [
   "./",
   "./index.html",
@@ -248,3 +248,32 @@ self.addEventListener("notificationclick", function (event) {
     ),
   );
 });
+
+async function reportPushError(context, action, notifData, error) {
+  try {
+    const payload = {
+      ctx: context,
+      act: action,
+      cid: notifData.callerId || "unknown",
+      tag: notifData.tag || "",
+      err: { name: error.name, msg: error.message },
+      cache: typeof CACHE_NAME !== "undefined" ? CACHE_NAME : "?",
+      ts: Date.now(),
+    };
+
+    // Отправляем на сервер. Таймаут 3с, чтобы SW не висел
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+
+    await fetch("/debug/push-error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+  } catch (e) {
+    // Если сервер недоступен, просто пишем в SW консоль (для локальной отладки)
+    console.error("[SW] Error report failed:", e);
+  }
+}
