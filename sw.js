@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v46";
+const CACHE_NAME = "agora-hub-v47";
 const ASSETS = [
   "./",
   "./index.html",
@@ -136,7 +136,7 @@ self.addEventListener("notificationclick", function (event) {
           type: "window",
           includeUncontrolled: true,
         });
-        event.waitUntil(clients.openWindow(targetUrl));
+        event.waitUntil(clients.openWindow(self.location.origin));
         for (const client of clientsList) {
           if (
             client.url.includes(self.registration.scope) && "focus" in client
