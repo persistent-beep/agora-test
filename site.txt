@@ -2135,7 +2135,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v43";
+const CACHE_NAME = "agora-hub-v47";
 const ASSETS = [
   "./",
   "./index.html",
@@ -2224,87 +2224,6 @@ self.addEventListener("push", function (event) {
   }
 });
 
-// Ловим клик по уведомлению (или по кнопкам Принять/Отклонить)
-//self.addEventListener("notificationclick", function (event) {
-//  event.notification.close();
-//
-//  const action = event.action;
-//  const payloadData = event.notification.data || {};
-//  const caller = payloadData.caller || "unknown";
-//  const target = payloadData.target || "unknown";
-//
-//  const targetUrl = self.registration.scope + "?call=" +
-//    encodeURIComponent(caller);
-//
-//  event.waitUntil(
-//    Promise.resolve().then(async () => {
-//      // 🔴 Отклонить звонок
-//      if (action === "decline") {
-//        // Отправляем сигнал об отклонении на сервер, если клиент открыт
-//        const clients = await self.clients.matchAll({
-//          type: "window",
-//          includeUncontrolled: true,
-//        });
-//        let isAppOpen = false;
-//
-//        for (const client of clients) {
-//          if (client.url.includes(self.registration.scope)) {
-//            client.postMessage({
-//              type: "CALL_DECLINED",
-//              caller: caller,
-//            });
-//            isAppOpen = true;
-//            break;
-//          }
-//        }
-//        if (!isAppOpen) {
-//          try {
-//            await fetch(`${API_URL}/call/decline`, {
-//              method: "POST",
-//              headers: { "Content-Type": "application/json" },
-//              body: JSON.stringify({ caller: caller, target: target }),
-//            });
-//            console.log("[SW] Сигнал отбоя успешно отправлен на сервер в фоне");
-//          } catch (err) {
-//            console.error("[SW] Ошибка при отправке отбоя на сервер:", err);
-//          }
-//        }
-//        return;
-//      }
-//      // Если клиент не открыт — можно отправить запрос на сервер
-//      // await fetch(`${API_URL}/call/decline`, { ... });
-//
-//      // 🟢 Принять звонок (action: "answer" или клик по телу уведомления)
-//      if (action === "answer" || action === "") {
-//        const clients = await self.clients.matchAll({
-//          type: "window",
-//          includeUncontrolled: true,
-//        });
-//
-//        // Ищем уже открытое окно вашего PWA
-//        for (const client of clients) {
-//          if (
-//            client.url.includes(self.registration.scope) && "focus" in client
-//          ) {
-//            await client.focus();
-//            client.postMessage({
-//              type: "WAKE_UP_CALL",
-//              caller: caller,
-//              autoAnswer: action === "answer", // Флаг для авто-принятия
-//            });
-//            return;
-//          }
-//        }
-//
-//        // Если окно не найдено — открываем новое
-//        if (clients.openWindow) {
-//          return clients.openWindow(targetUrl);
-//        }
-//      }
-//    }).catch((err) => console.error("[SW] Ошибка notificationclick:", err)),
-//  );
-//});
-
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
 
@@ -2359,11 +2278,10 @@ self.addEventListener("notificationclick", function (event) {
           if (
             client.url.includes(self.registration.scope) && "focus" in client
           ) {
-            await client.focus();
+            client.focus();
             client.postMessage({
               type: "WAKE_UP_CALL",
               caller: caller,
-              autoAnswer: action === "answer",
             });
             return;
           }

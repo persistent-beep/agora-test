@@ -136,7 +136,7 @@ self.addEventListener("notificationclick", function (event) {
           type: "window",
           includeUncontrolled: true,
         });
-        event.waitUntil(clients.openWindow(self.location.origin));
+
         for (const client of clientsList) {
           if (
             client.url.includes(self.registration.scope) && "focus" in client
