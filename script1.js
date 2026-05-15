@@ -1270,7 +1270,7 @@ document.addEventListener("visibilitychange", () => {
     // Слушаем ответ от SW
     navigator.serviceWorker.addEventListener("message", (e) => {
         if (e.data && e.data.type === "CACHE_NAME") {
-            label.textContent = `CACHE: ${e.data.name}`;
+            label.textContent = `${e.data.name}`;
         }
     });
 })();

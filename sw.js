@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v49";
+const CACHE_NAME = "agora-hub-v50";
 const ASSETS = [
   "./",
   "./index.html",
@@ -168,6 +168,7 @@ self.addEventListener("push", function (event) {
 //  );
 //});
 self.addEventListener("notificationclick", function (event) {
+  // Закрываем пуш сразу, это дает Android понять, что мы обработали клик
   event.notification.close();
 
   const action = event.action;
@@ -175,78 +176,75 @@ self.addEventListener("notificationclick", function (event) {
   const caller = payloadData.caller || "unknown";
   const target = payloadData.target || "unknown";
 
-  // Добавляем параметр, чтобы скрипт понял, что мы нажали именно "Принять"
-  const autoAnswerParam = action === "answer" ? "&auto_answer=1" : "";
-  const targetUrl = self.registration.scope + "?call=" +
-    encodeURIComponent(caller) + autoAnswerParam;
+  console.log("[SW] notificationclick:", action, caller);
 
-  console.log("[SW] notificationclick:", { action, caller, target });
+  // 🔴 ОТКЛОНИТЬ
+  if (action === "decline") {
+    event.waitUntil(
+      self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(
+        function (clients) {
+          let notified = false;
+          clients.forEach(function (client) {
+            if (client.url.includes(self.registration.scope)) {
+              client.postMessage({ type: "CALL_DECLINED", caller: caller });
+              notified = true;
+            }
+          });
 
-  event.waitUntil(
-    (async () => {
-      // 🔴 Отклонить
-      if (action === "decline") {
-        const clients = await self.clients.matchAll({
-          type: "window",
-          includeUncontrolled: true,
-        });
-        let notified = false;
-
-        for (const client of clients) {
-          if (client.url.includes(self.registration.scope)) {
-            client.postMessage({ type: "CALL_DECLINED", caller });
-            notified = true;
-          }
-        }
-        if (!notified) {
-          try {
-            await fetch(`${API_URL}/call/decline`, {
+          // Если приложение убито, шлем запрос на сервер
+          if (!notified) {
+            return fetch(API_URL + "/call/decline", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ caller, target }),
+              body: JSON.stringify({ caller: caller, target: target }),
+            }).catch(function (err) {
+              console.error("[SW] Ошибка decline:", err);
             });
-          } catch (err) {
-            console.error("[SW] Ошибка отправки decline:", err);
           }
-        }
-        return;
-      }
+        },
+      ),
+    );
+    return;
+  }
 
-      // 🟢 Принять (кнопка или клик по телу уведомления)
-      if (action === "answer" || action === "" || action === undefined) {
-        const clientsList = await self.clients.matchAll({
-          type: "window",
-          includeUncontrolled: true,
-        });
+  // 🟢 ПРИНЯТЬ (или клик по телу пуша)
 
-        for (const client of clientsList) {
+  // Создаем 100% валидный URL через встроенный объект URL (спасает от багов Android WebAPK)
+  const urlObj = new URL(self.registration.scope);
+  urlObj.searchParams.set("call", caller);
+  if (action === "answer") {
+    urlObj.searchParams.set("auto_answer", "1");
+  }
+  const targetUrl = urlObj.href;
+
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(
+      function (clientList) {
+        // 1. Ищем уже открытую, но свернутую вкладку
+        for (let i = 0; i < clientList.length; i++) {
+          const client = clientList[i];
           if (
             client.url.includes(self.registration.scope) && "focus" in client
           ) {
-            try {
-              // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Ждем, пока Android развернет окно
-              const focusedClient = await client.focus();
+            return client.focus().then(function (focusedClient) {
               if (focusedClient) {
                 focusedClient.postMessage({
                   type: "WAKE_UP_CALL",
                   caller: caller,
-                  autoAnswer: action === "answer", // Передаем флаг "Авто-поднятие"
+                  autoAnswer: action === "answer",
                 });
               }
-              return; // Теперь return срабатывает только когда фокус завершился
-            } catch (e) {
-              console.error("[SW] Ошибка фокуса:", e);
-            }
+            });
           }
         }
 
-        // Окно не найдено → открываем новое (холодный старт)
-        if (typeof self.clients.openWindow === "function") {
-          // ✅ Обязательно await
-          await self.clients.openWindow(targetUrl);
-          return;
+        // 2. ЕСЛИ ПРИЛОЖЕНИЕ УБИТО — открываем холодный старт
+        if (self.clients.openWindow) {
+          console.log("[SW] Открываем убитое приложение:", targetUrl);
+          // Возвращать (return) промис openWindow ОБЯЗАТЕЛЬНО для Android!
+          return self.clients.openWindow(targetUrl);
         }
-      }
-    })().catch((err) => console.error("[SW] Ошибка notificationclick:", err)),
+      },
+    ),
   );
 });
