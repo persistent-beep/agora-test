@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v51";
+const CACHE_NAME = "agora-hub-v52";
 const ASSETS = [
   "./",
   "./index.html",
@@ -167,86 +167,37 @@ self.addEventListener("push", function (event) {
 //    })().catch((err) => console.error("[SW] Ошибка notificationclick:", err)),
 //  );
 //});
+// Обработчик клика по уведомлению + отладка
 self.addEventListener("notificationclick", function (event) {
-  // Закрываем пуш сразу, это дает Android понять, что мы обработали клик
   event.notification.close();
+  const action = event.action || "body_click";
+  const data = event.notification.data || {};
 
-  const action = event.action;
-  const payloadData = event.notification.data || {};
-  const caller = payloadData.caller || "unknown";
-  const target = payloadData.target || "unknown";
+  event.waitUntil((async () => {
+    try {
+      const clientsList = await clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      const payload = JSON.stringify({
+        callerId: data.callerId,
+        callToken: data.callToken,
+        autoAnswer: action === "accept",
+      });
+      const targetUrl = `/?call=${encodeURIComponent(payload)}`;
 
-  console.log("[SW] notificationclick:", action, caller);
-
-  // 🔴 ОТКЛОНИТЬ
-  if (action === "decline") {
-    event.waitUntil(
-      self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(
-        function (clients) {
-          let notified = false;
-          clients.forEach(function (client) {
-            if (client.url.includes(self.registration.scope)) {
-              client.postMessage({ type: "CALL_DECLINED", caller: caller });
-              notified = true;
-            }
-          });
-
-          // Если приложение убито, шлем запрос на сервер
-          if (!notified) {
-            return fetch(API_URL + "/call/decline", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ caller: caller, target: target }),
-            }).catch(function (err) {
-              console.error("[SW] Ошибка decline:", err);
-            });
-          }
-        },
-      ),
-    );
-    return;
-  }
-
-  // 🟢 ПРИНЯТЬ (или клик по телу пуша)
-
-  // Создаем 100% валидный URL через встроенный объект URL (спасает от багов Android WebAPK)
-  const urlObj = new URL(self.registration.scope);
-  urlObj.searchParams.set("call", caller);
-  if (action === "answer") {
-    urlObj.searchParams.set("auto_answer", "1");
-  }
-  const targetUrl = urlObj.href;
-
-  event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(
-      function (clientList) {
-        // 1. Ищем уже открытую, но свернутую вкладку
-        for (let i = 0; i < clientList.length; i++) {
-          const client = clientList[i];
-          if (
-            client.url.includes(self.registration.scope) && "focus" in client
-          ) {
-            return client.focus().then(function (focusedClient) {
-              if (focusedClient) {
-                focusedClient.postMessage({
-                  type: "WAKE_UP_CALL",
-                  caller: caller,
-                  autoAnswer: action === "answer",
-                });
-              }
-            });
-          }
-        }
-
-        // 2. ЕСЛИ ПРИЛОЖЕНИЕ УБИТО — открываем холодный старт
-        if (self.clients.openWindow) {
-          console.log("[SW] Открываем убитое приложение:", targetUrl);
-          // Возвращать (return) промис openWindow ОБЯЗАТЕЛЬНО для Android!
-          return self.clients.openWindow(targetUrl);
-        }
-      },
-    ),
-  );
+      if (clientsList.length > 0) {
+        const client = clientsList[0];
+        if ("navigate" in client) await client.navigate(targetUrl);
+        if ("focus" in client) await client.focus();
+      } else {
+        await clients.openWindow(targetUrl);
+      }
+    } catch (err) {
+      // Отправляем ошибку на сервер для отладки
+      await reportPushError("notificationclick", action, data, err);
+    }
+  })());
 });
 
 async function reportPushError(context, action, notifData, error) {
