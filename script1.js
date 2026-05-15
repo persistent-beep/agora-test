@@ -1154,7 +1154,7 @@ window.addEventListener("load", () => {
             console.log("[Push] Звонок был отклонен или сброшен");
 
             // Сбрасываем глобальное состояние звонка
-            callState = "IDLE";
+            hangUp();
 
             // Закрываем интерфейс звонка или обновляем UI на дефолтный
             updateCallUI(
@@ -1250,3 +1250,27 @@ document.addEventListener("visibilitychange", () => {
         }
     }
 });
+// Отображение CACHE_NAME в футере
+(function initCacheDisplay() {
+    const label = document.getElementById("cache-label");
+    if (!label) return;
+
+    function requestCache() {
+        if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage("GET_CACHE_NAME");
+        }
+    }
+
+    // Запрос сразу, если SW уже под контролем
+    if (navigator.serviceWorker.controller) requestCache();
+
+    // Ждём готовности SW
+    navigator.serviceWorker.ready.then(() => requestCache());
+
+    // Слушаем ответ от SW
+    navigator.serviceWorker.addEventListener("message", (e) => {
+        if (e.data && e.data.type === "CACHE_NAME") {
+            label.textContent = `CACHE: ${e.data.name}`;
+        }
+    });
+})();

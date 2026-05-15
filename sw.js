@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v48";
+const CACHE_NAME = "agora-hub-v49";
 const ASSETS = [
   "./",
   "./index.html",
@@ -18,7 +18,16 @@ self.addEventListener("install", (event) => {
   );
   self.skipWaiting();
 });
-
+// 2. реакция на запрос
+self.addEventListener("message", (event) => {
+  if (event.data === "GET_CACHE_NAME") {
+    self.clients.matchAll().then((clients) => {
+      clients.forEach((client) => {
+        client.postMessage({ type: "CACHE_NAME", name: CACHE_NAME });
+      });
+    });
+  }
+});
 // Удаление старых кешей
 self.addEventListener("activate", (event) => {
   const cacheWhitelist = [CACHE_NAME];
