@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v47";
+const CACHE_NAME = "agora-hub-v48";
 const ASSETS = [
   "./",
   "./index.html",
@@ -87,6 +87,77 @@ self.addEventListener("push", function (event) {
   }
 });
 
+//self.addEventListener("notificationclick", function (event) {
+//  event.notification.close();
+//
+//  const action = event.action;
+//  const payloadData = event.notification.data || {};
+//  const caller = payloadData.caller || "unknown";
+//  const target = payloadData.target || "unknown";
+//  const targetUrl = self.registration.scope + "?call=" +
+//    encodeURIComponent(caller);
+//
+//  console.log("[SW] notificationclick:", { action, caller, target });
+//
+//  event.waitUntil(
+//    (async () => {
+//      // 🔴 Отклонить
+//      if (action === "decline") {
+//        const clients = await self.clients.matchAll({
+//          type: "window",
+//          includeUncontrolled: true,
+//        });
+//        let notified = false;
+//
+//        for (const client of clients) {
+//          if (client.url.includes(self.registration.scope)) {
+//            client.postMessage({ type: "CALL_DECLINED", caller });
+//            notified = true;
+//            break;
+//          }
+//        }
+//        if (!notified) {
+//          try {
+//            await fetch(`${API_URL}/call/decline`, {
+//              method: "POST",
+//              headers: { "Content-Type": "application/json" },
+//              body: JSON.stringify({ caller, target }),
+//            });
+//          } catch (err) {
+//            console.error("[SW] Ошибка отправки decline:", err);
+//          }
+//        }
+//        return;
+//      }
+//
+//      // 🟢 Принять (кнопка или тело уведомления)
+//      if (action === "answer" || action === "" || action === undefined) {
+//        const clientsList = await self.clients.matchAll({
+//          type: "window",
+//          includeUncontrolled: true,
+//        });
+//
+//        for (const client of clientsList) {
+//          if (
+//            client.url.includes(self.registration.scope) && "focus" in client
+//          ) {
+//            client.focus();
+//            client.postMessage({
+//              type: "WAKE_UP_CALL",
+//              caller: caller,
+//            });
+//            return;
+//          }
+//        }
+//
+//        // Окно не найдено → открываем новое
+//        if (typeof self.clients.openWindow === "function") {
+//          return self.clients.openWindow(targetUrl);
+//        }
+//      }
+//    })().catch((err) => console.error("[SW] Ошибка notificationclick:", err)),
+//  );
+//});
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
 
@@ -94,8 +165,11 @@ self.addEventListener("notificationclick", function (event) {
   const payloadData = event.notification.data || {};
   const caller = payloadData.caller || "unknown";
   const target = payloadData.target || "unknown";
+
+  // Добавляем параметр, чтобы скрипт понял, что мы нажали именно "Принять"
+  const autoAnswerParam = action === "answer" ? "&auto_answer=1" : "";
   const targetUrl = self.registration.scope + "?call=" +
-    encodeURIComponent(caller);
+    encodeURIComponent(caller) + autoAnswerParam;
 
   console.log("[SW] notificationclick:", { action, caller, target });
 
@@ -113,7 +187,6 @@ self.addEventListener("notificationclick", function (event) {
           if (client.url.includes(self.registration.scope)) {
             client.postMessage({ type: "CALL_DECLINED", caller });
             notified = true;
-            break;
           }
         }
         if (!notified) {
@@ -130,7 +203,7 @@ self.addEventListener("notificationclick", function (event) {
         return;
       }
 
-      // 🟢 Принять (кнопка или тело уведомления)
+      // 🟢 Принять (кнопка или клик по телу уведомления)
       if (action === "answer" || action === "" || action === undefined) {
         const clientsList = await self.clients.matchAll({
           type: "window",
@@ -141,18 +214,28 @@ self.addEventListener("notificationclick", function (event) {
           if (
             client.url.includes(self.registration.scope) && "focus" in client
           ) {
-            client.focus();
-            client.postMessage({
-              type: "WAKE_UP_CALL",
-              caller: caller,
-            });
-            return;
+            try {
+              // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Ждем, пока Android развернет окно
+              const focusedClient = await client.focus();
+              if (focusedClient) {
+                focusedClient.postMessage({
+                  type: "WAKE_UP_CALL",
+                  caller: caller,
+                  autoAnswer: action === "answer", // Передаем флаг "Авто-поднятие"
+                });
+              }
+              return; // Теперь return срабатывает только когда фокус завершился
+            } catch (e) {
+              console.error("[SW] Ошибка фокуса:", e);
+            }
           }
         }
 
-        // Окно не найдено → открываем новое
+        // Окно не найдено → открываем новое (холодный старт)
         if (typeof self.clients.openWindow === "function") {
-          return self.clients.openWindow(targetUrl);
+          // ✅ Обязательно await
+          await self.clients.openWindow(targetUrl);
+          return;
         }
       }
     })().catch((err) => console.error("[SW] Ошибка notificationclick:", err)),

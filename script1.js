@@ -71,27 +71,6 @@ async function fetchIceServers() {
     return iceConfig;
 }
 
-async function waitIceGathering(peerConnection) {
-    if (peerConnection.iceGatheringState === "complete") {
-        console.log("[ICE] gathering уже complete, ждать не нужно");
-        return;
-    }
-    console.log("[ICE] ожидаю завершения gathering...");
-    await new Promise((resolve) => {
-        const checkState = () => {
-            if (peerConnection.iceGatheringState === "complete") {
-                console.log("[ICE] gathering завершён (complete)");
-                peerConnection.removeEventListener(
-                    "icegatheringstatechange",
-                    checkState,
-                );
-                resolve();
-            }
-        };
-        peerConnection.addEventListener("icegatheringstatechange", checkState);
-    });
-}
-
 function urlBase64ToUint8Array(base64String) {
     const padding = "=".repeat((4 - base64String.length % 4) % 4);
     const base64 = (base64String + padding).replace(/-/g, "+").replace(
@@ -708,7 +687,6 @@ async function processOfferAndAnswer(sdp) {
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    //await waitIceGathering(pc);
 
     signalingSocket.send(JSON.stringify({
         type: "answer",
@@ -807,7 +785,7 @@ function connectSignaling(token) {
         await handleSignalingMessage(msg);
     };
 
-    signalingSocket.onclose = () => {
+    signalingSocket.onclose = (event) => {
         clearInterval(pingInterval);
         console.log(
             `[Signal] Disconnected. Code ${event.code}, Reason: ${event.reason}`,
@@ -839,7 +817,6 @@ async function handleSignalingMessage(msg) {
             try {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
-                //await waitIceGathering(pc);
                 signalingSocket.send(
                     JSON.stringify({
                         type: "offer",
@@ -965,8 +942,16 @@ async function handleSignalingMessage(msg) {
 // ========== ИНТЕРАКТИВ ЗВОНКА ==========
 
 function toggleMute() {
-    if (callState !== "CONNECTED") return;
+    if (callState !== "CONNECTED" || !localStream) return;
+
     isMuted = !isMuted;
+
+    // ФИЗИЧЕСКИ отключаем/включаем звук
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack) {
+        audioTrack.enabled = !isMuted;
+    }
+
     const micCanvas = document.getElementById("mic-canvas");
     micCanvas?.classList.toggle("muted-border", isMuted);
 
@@ -1127,51 +1112,60 @@ window.addEventListener("load", () => {
 
     // 2. Регистрируем Service Worker и слушаем от него команды
     if ("serviceWorker" in navigator) {
-        // Регистрация
-        navigator.serviceWorker.register("./sw.js").catch((e) =>
-            console.error("[SW] Error:", e)
-        );
-        navigator.serviceWorker.ready.then((registration) => {
-            setInterval(() => {
-                registration.update();
-            }, 15000);
-        });
-        // Ловим WAKE_UP_CALL (если приложение УЖЕ БЫЛО открыто, но висело в фоне)
-        navigator.serviceWorker.addEventListener("message", (event) => {
-            if (!event.data) return;
+        navigator.serviceWorker.register("./sw.js")
+            .then((reg) => {
+                console.log("[SW] Registered successfully");
 
-            if (event.data && event.data.type === "WAKE_UP_CALL") {
-                const caller = event.data.caller;
-                console.log(`[Push] Проснулись от звонка от ${caller}`);
+                // Первичная проверка обновлений при загрузке
+                reg.update();
 
-                initCallInterface(caller);
-                callState = "RINGING_IN";
-                updateCallUI(
-                    "ANSWER",
-                    "btn-green",
-                    "INCOMING CALL",
-                    "#ff9900",
-                    false,
-                );
-            }
-            if (event.data.type === "CALL_DECLINED") {
-                console.log("[Push] Звонок был отклонен или сброшен");
-
-                // Сбрасываем глобальное состояние звонка
-                callState = "IDLE";
-
-                // Закрываем интерфейс звонка или обновляем UI на дефолтный
-                closeCallInterface();
-                updateCallUI(
-                    "CALL",
-                    "btn-blue",
-                    "READY",
-                    "#000000",
-                    true,
-                );
-            }
-        });
+                // Проверка обновлений при возвращении вкладки из фона
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") {
+                        reg.update().catch((e) =>
+                            console.error("[SW] Update failed on focus:", e)
+                        );
+                    }
+                });
+            })
+            .catch((e) => {
+                console.error("[SW] Registration failed:", e);
+            });
     }
+    // Ловим WAKE_UP_CALL (если приложение УЖЕ БЫЛО открыто, но висело в фоне)
+    navigator.serviceWorker.addEventListener("message", (event) => {
+        if (!event.data) return;
+
+        if (event.data && event.data.type === "WAKE_UP_CALL") {
+            const caller = event.data.caller;
+            console.log(`[Push] Проснулись от звонка от ${caller}`);
+
+            initCallInterface(caller);
+            callState = "RINGING_IN";
+            updateCallUI(
+                "ANSWER",
+                "btn-green",
+                "INCOMING CALL",
+                "#ff9900",
+                false,
+            );
+        }
+        if (event.data.type === "CALL_DECLINED") {
+            console.log("[Push] Звонок был отклонен или сброшен");
+
+            // Сбрасываем глобальное состояние звонка
+            callState = "IDLE";
+
+            // Закрываем интерфейс звонка или обновляем UI на дефолтный
+            updateCallUI(
+                "CALL",
+                "btn-blue",
+                "READY",
+                "#000000",
+                true,
+            );
+        }
+    });
 
     // 3. Обработка холодного старта из Push-уведомления (если приложение было убито)
     const urlParams = new URLSearchParams(window.location.search);
