@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v43";
+const CACHE_NAME = "agora-hub-v44";
 const ASSETS = [
   "./",
   "./index.html",
@@ -226,7 +226,6 @@ self.addEventListener("notificationclick", function (event) {
             client.postMessage({
               type: "WAKE_UP_CALL",
               caller: caller,
-              autoAnswer: action === "answer",
             });
             return;
           }
