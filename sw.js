@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v39";
+const CACHE_NAME = "agora-hub-v40";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const ASSETS = [
   "./logo.png",
   "./manifest.json",
 ];
+const API_URL = "https://agora-service.onrender.com";
 
 // 1. При установке кэшируем основные файлы (App Shell)
 self.addEventListener("install", (event) => {
@@ -73,7 +74,7 @@ self.addEventListener("push", function (event) {
       requireInteraction: true,
       silent: false,
       sound: "default",
-      data: { caller: payload.caller },
+      data: { caller: payload.caller, target: payload.terget },
       actions: [
         { action: "answer", title: "🟢 Принять" },
         { action: "decline", title: "🔴 Отклонить" },
@@ -93,6 +94,8 @@ self.addEventListener("notificationclick", function (event) {
   const action = event.action;
   const payloadData = event.notification.data || {};
   const caller = payloadData.caller || "unknown";
+  const terget = payloadData.target || "unknown";
+
   const targetUrl = self.registration.scope + "?call=" +
     encodeURIComponent(caller);
 
@@ -105,12 +108,30 @@ self.addEventListener("notificationclick", function (event) {
           type: "window",
           includeUncontrolled: true,
         });
+        isAppOpen = true;
+
         for (const client of clients) {
           if (client.url.includes(self.registration.scope)) {
             client.postMessage({
               type: "CALL_DECLINED",
               caller: caller,
             });
+            isAppOpen = true;
+            break;
+          }
+        }
+        if (!isAppOpen){
+          try{
+            await fetch(`${API_URL}/call/decline`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ caller: caller, target: target })
+                });
+                console.log("[SW] Сигнал отбоя успешно отправлен на сервер в фоне");
+            } catch (err) {
+                console.error("[SW] Ошибка при отправке отбоя на сервер:", err);
+            }
+        }
             return;
           }
         }

@@ -31,6 +31,10 @@ class AuthRequest(BaseModel):
 class PushSubscriptionRequest(BaseModel):
     subscription: dict
 
+class DeclineCallRequest(BaseModel):
+    caller: str
+    target: str
+
 # BIHSLdqb6TI9eFBKl5bCV2-WTTLVpXxoluqhudCaxFktv19Z_mKz39KjRTvBOG4dBgBDpyOzlvc8MGjr3QD0Ko8
 
 # Настройки Supabase и VAPID из .env
@@ -101,18 +105,6 @@ def get_ice_servers(role: str):
     ]
 
 # Эндпоинт для сохранения подписки от браузера
-#@app.post("/push/subscribe")
-#async def save_push_subscription(data: dict, token: str = Query(...)):
-#    user_info = get_user_from_token(token)
-#    if not user_info:
-#        raise HTTPException(status_code=401)
-#    
-#    # Сохраняем в Supabase (upsert, чтобы не дублировать)
-#    supabase.table("push_subs").upsert({
-#        "user_id": user_info["role"],
-#        "sub_data": data["subscription"]
-#    }).execute()
-#    return {"status": "ok"}
 @app.post("/push/subscribe")
 async def save_push_subscription(data: PushSubscriptionRequest, token: str = Query(...)):
     user_info = get_user_from_token(token)
@@ -205,6 +197,7 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
                                 "title": "Входящий вызов",
                                 "body": f"{sender_id} вызывает вас...",
                                 "caller": sender_id,
+                                "target": target,
                                 "type": "INCOMING_CALL"
                             }),
                             vapid_private_key=VAPID_PRIVATE_KEY,
@@ -262,6 +255,16 @@ async def login(data: AuthRequest):
         "display_name": user["display_name"]
     }
 
+@app.post("/call/decline")
+async def decline_call(data: DeclineCallRequest):
+    # Находим сокет звонящего по его ID (caller)
+    caller_ws = user_manager.get_user_ws(data.caller)
+    if caller_ws:
+        # Отправляем ему сигнал завершения вызова
+        await caller_ws.send_json({"type": "peer_disconnected"})
+        print(f"[Call] Звонок от {data.caller} был отклонен пользователем {data.target} через Push")
+    return {"status": "ok"}
+
 # Новый маршрут для получения ICE-серверов (для getServers в JS-коде)
 @app.get("/ice-servers")
 async def get_ice_config(role: str="guest"):
@@ -272,22 +275,6 @@ async def get_ice_config(role: str="guest"):
         print(f"error gen {e}")
         return {"urls":[{"urls":"stun:stun.l.google.com:19302"}]}
 
-# WebSocket endpoint для сигнализации
-#@app.websocket("/ws/{room_id}")
-#async def websocket_endpoint(websocket: WebSocket, room_id: str):
-#    await manager.connect(room_id, websocket)
-#    # Ждём, пока в комнате не будет 2 клиента (Peer-to-Peer звонок)
-#    try:    
-#        if len(manager.rooms[room_id]) == 2:
-#            first = manager.rooms[room_id][0]
-#        # Первый клиент начинает offer по сигналу
-#            await first.send_json({"type": "start_offer"})
-#        while True:
-#            data = await websocket.receive_json()
-#            await manager.broadcast_json(room_id, websocket, data)
-#    except WebSocketDisconnect:
-#        manager.disconnect(room_id, websocket)
-#        await manager.broadcast_json(room_id, websocket, {"type":"peer_disconnected"})
 
 # Новый WebSocket endpoint
 @app.websocket("/ws")
