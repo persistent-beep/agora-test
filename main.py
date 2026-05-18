@@ -202,6 +202,8 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
                             }),
                             vapid_private_key=VAPID_PRIVATE_KEY,
                             vapid_claims=VAPID_CLAIMS
+                            ttl=45,
+                            heders={"Urgency":"high"}
                         )
                         print(f"[PUSH] Уведомление отправлено {target}")
                     except WebPushException as e:

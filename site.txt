@@ -2180,7 +2180,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v52";
+const CACHE_NAME = "agora-hub-v54";
 const ASSETS = [
   "./",
   "./index.html",
@@ -2251,33 +2251,33 @@ self.addEventListener("fetch", (event) => {
 });
 
 // Ловим Push от сервера
-self.addEventListener("push", function (event) {
-  if (!event.data) return;
-
-  const payload = event.data.json();
-
-  if (payload.type === "INCOMING_CALL") {
-    const options = {
-      body: payload.body,
-      icon: "./icons/icon-192.png",
-      badge: "./icons/icon-192.png",
-      vibrate: [200, 100, 200, 100, 200, 100, 200],
-      requireInteraction: true,
-      silent: false,
-      sound: "default",
-      data: { caller: payload.caller, target: payload.target },
-      actions: [
-        { action: "answer", title: "🟢 Принять" },
-        { action: "decline", title: "🔴 Отклонить" },
-      ],
-    };
-
-    event.waitUntil(
-      self.registration.showNotification(payload.title, options),
-    );
-  }
-});
-
+//self.addEventListener("push", function (event) {
+//  if (!event.data) return;
+//
+//  const payload = event.data.json();
+//
+//  if (payload.type === "INCOMING_CALL") {
+//    const options = {
+//      body: payload.body,
+//      icon: "./icons/icon-192.png",
+//      badge: "./icons/icon-192.png",
+//      vibrate: [200, 100, 200, 100, 200, 100, 200],
+//      requireInteraction: true,
+//      silent: false,
+//      sound: "default",
+//      data: { caller: payload.caller, target: payload.target },
+//      actions: [
+//        { action: "answer", title: "🟢 Принять" },
+//        { action: "decline", title: "🔴 Отклонить" },
+//      ],
+//    };
+//
+//    event.waitUntil(
+//      self.registration.showNotification(payload.title, options),
+//    );
+//  }
+//});
+//
 //self.addEventListener("notificationclick", function (event) {
 //  event.notification.close();
 //
@@ -2349,67 +2349,113 @@ self.addEventListener("push", function (event) {
 //    })().catch((err) => console.error("[SW] Ошибка notificationclick:", err)),
 //  );
 //});
-// Обработчик клика по уведомлению + отладка
-self.addEventListener("notificationclick", function (event) {
-  event.notification.close();
-  const action = event.action || "body_click";
-  const data = event.notification.data || {};
+// Ловим Push от сервера
+self.addEventListener("push", function (event) {
+  if (!event.data) return;
 
-  event.waitUntil((async () => {
-    try {
-      const clientsList = await clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-      const payload = JSON.stringify({
-        callerId: data.callerId,
-        callToken: data.callToken,
-        autoAnswer: action === "accept",
-      });
-      const targetUrl = `/?call=${encodeURIComponent(payload)}`;
+  const payload = event.data.json();
 
-      if (clientsList.length > 0) {
-        const client = clientsList[0];
-        if ("navigate" in client) await client.navigate(targetUrl);
-        if ("focus" in client) await client.focus();
-      } else {
-        await clients.openWindow(targetUrl);
-      }
-    } catch (err) {
-      // Отправляем ошибку на сервер для отладки
-      await reportPushError("notificationclick", action, data, err);
-    }
-  })());
-});
-
-async function reportPushError(context, action, notifData, error) {
-  try {
-    const payload = {
-      ctx: context,
-      act: action,
-      cid: notifData.callerId || "unknown",
-      tag: notifData.tag || "",
-      err: { name: error.name, msg: error.message },
-      cache: typeof CACHE_NAME !== "undefined" ? CACHE_NAME : "?",
-      ts: Date.now(),
+  if (payload.type === "INCOMING_CALL") {
+    const options = {
+      body: payload.body,
+      icon: "./icons/icon-192.png",
+      badge: "./icons/icon-192.png",
+      vibrate: [200, 100, 200, 100, 200, 100, 200],
+      requireInteraction: true, // Пуш не исчезнет сам
+      silent: false,
+      sound: "default",
+      data: { caller: payload.caller, target: payload.target },
+      // Убрали кнопку "Принять". Оставляем только "Отклонить".
+      actions: [
+        { action: "decline", title: "🔴 Отклонить" },
+      ],
     };
 
-    // Отправляем на сервер. Таймаут 3с, чтобы SW не висел
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-
-    await fetch("/debug/push-error", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-  } catch (e) {
-    // Если сервер недоступен, просто пишем в SW консоль (для локальной отладки)
-    console.error("[SW] Error report failed:", e);
+    event.waitUntil(
+      self.registration.showNotification(payload.title, options),
+    );
   }
-}
+});
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+
+  const action = event.action;
+  const payloadData = event.notification.data || {};
+  const caller = payloadData.caller || "unknown";
+  const target = payloadData.target || "unknown";
+
+  console.log("[SW] notificationclick:", { action, caller, target });
+
+  // 🔴 1. Нажали кнопку "ОТКЛОНИТЬ"
+  if (action === "decline") {
+    event.waitUntil(
+      self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(
+        function (clients) {
+          let notified = false;
+
+          // Если приложение свернуто - кидаем ему команду на сброс
+          clients.forEach(function (client) {
+            if (client.url.includes(self.registration.scope)) {
+              client.postMessage({ type: "CALL_DECLINED", caller: caller });
+              notified = true;
+            }
+          });
+
+          // Если приложение вообще закрыто - шлем запрос на сервер
+          if (!notified) {
+            return fetch(`${API_URL}/call/decline`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ caller: caller, target: target }),
+            }).catch((err) =>
+              console.error("[SW] Ошибка отправки decline:", err)
+            );
+          }
+        },
+      ),
+    );
+    return;
+  }
+
+  // 🟢 2. Нажали НА ТЕЛО УВЕДОМЛЕНИЯ (action пустой) -> открываем/разворачиваем звонок
+  if (!action) {
+    // Надежный способ склеить URL для Android
+    const urlObj = new URL(self.registration.scope);
+    urlObj.searchParams.set("call", caller);
+    const targetUrl = self.registration.scope + "?call=" +
+      encodeURIComponent(caller);
+    event.waitUntil(
+      self.clients.matchAll({ type: "window", includeUncontrolled: true })
+        .then(
+          function (clientsList) {
+            // Пытаемся найти уже открытую вкладку
+            for (let i = 0; i < clientsList.length; i++) {
+              const client = clientsList[i];
+              if (
+                client.url.includes(self.registration.scope) &&
+                "focus" in client
+              ) {
+                return client.focus().then(function (focusedClient) {
+                  if (focusedClient) {
+                    focusedClient.postMessage({
+                      type: "WAKE_UP_CALL",
+                      caller: caller,
+                    });
+                  }
+                });
+              }
+            }
+
+            // Если вкладки нет (убита) -> Открываем приложение с нуля
+            if (self.clients.openWindow) {
+              return self.clients.openWindow(targetUrl);
+            }
+          },
+        ),
+    );
+  }
+});
 {
   "name": "AGORA HUB",
   "short_name": "AGORA",

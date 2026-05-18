@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v54";
+const CACHE_NAME = "agora-hub-v55";
 const ASSETS = [
   "./",
   "./index.html",
@@ -182,6 +182,8 @@ self.addEventListener("push", function (event) {
       requireInteraction: true, // Пуш не исчезнет сам
       silent: false,
       sound: "default",
+      priority: 2,
+      timestamp: Date.now(),
       data: { caller: payload.caller, target: payload.target },
       // Убрали кнопку "Принять". Оставляем только "Отклонить".
       actions: [
