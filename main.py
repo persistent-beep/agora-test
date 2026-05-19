@@ -203,7 +203,11 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
                             vapid_private_key=VAPID_PRIVATE_KEY,
                             vapid_claims=VAPID_CLAIMS,
                             ttl=45,
-                            headers={"Urgency":"high"}
+                            headers={"Urgency":"high",
+                                     "Topic":"incoming-calls",
+                                     "apns-priority": "10",           # 10 означает немедленную доставку и пробуждение экрана
+                                     "apns-push-type": "alert",       # Указывает, что это системное видимое уведомление
+                                     "apns-expiration": "45"     }
                         )
                         print(f"[PUSH] Уведомление отправлено {target}")
                     except WebPushException as e:

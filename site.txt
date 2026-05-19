@@ -1604,7 +1604,13 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
                                 "type": "INCOMING_CALL"
                             }),
                             vapid_private_key=VAPID_PRIVATE_KEY,
-                            vapid_claims=VAPID_CLAIMS
+                            vapid_claims=VAPID_CLAIMS,
+                            ttl=45,
+                            headers={"Urgency":"high",
+                                     "Topic":"incoming-calls",
+                                     "apns-priority": "10",           # 10 означает немедленную доставку и пробуждение экрана
+                                     "apns-push-type": "alert",       # Указывает, что это системное видимое уведомление
+                                     "apns-expiration": "45"     }
                         )
                         print(f"[PUSH] Уведомление отправлено {target}")
                     except WebPushException as e:
@@ -2180,7 +2186,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v54";
+const CACHE_NAME = "agora-hub-v56";
 const ASSETS = [
   "./",
   "./index.html",
@@ -2364,6 +2370,8 @@ self.addEventListener("push", function (event) {
       requireInteraction: true, // Пуш не исчезнет сам
       silent: false,
       sound: "default",
+      priority: 2,
+      timestamp: Date.now(),
       data: { caller: payload.caller, target: payload.target },
       // Убрали кнопку "Принять". Оставляем только "Отклонить".
       actions: [
