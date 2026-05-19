@@ -1593,24 +1593,28 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
             if response.data:
                 for row in response.data:
                     sub_data = row["sub_data"]
+                    payload = json.dumps({
+                        "title": "Входящий вызов",
+                        "body": f"{sender_id} вызывает вас...",
+                        "caller": sender_id,
+                        "target": target,
+                        "type": "INCOMING_CALL"
+                    })
+                    headers = {
+                        "Urgency":"high",
+                        "Topic":"incoming-calls",
+                        "apns-priority": "10",           # 10 означает немедленную доставку и пробуждение экрана
+                        "apns-push-type": "alert",       # Указывает, что это системное видимое уведомление
+                        "apns-expiration": "45" 
+                    }
                     try:
-                        webpush(
+                        await asyncio.to_thread (webpush,
                             subscription_info=sub_data,
-                            data=json.dumps({
-                                "title": "Входящий вызов",
-                                "body": f"{sender_id} вызывает вас...",
-                                "caller": sender_id,
-                                "target": target,
-                                "type": "INCOMING_CALL"
-                            }),
+                            data=payload,
                             vapid_private_key=VAPID_PRIVATE_KEY,
                             vapid_claims=VAPID_CLAIMS,
                             ttl=45,
-                            headers={"Urgency":"high",
-                                     "Topic":"incoming-calls",
-                                     "apns-priority": "10",           # 10 означает немедленную доставку и пробуждение экрана
-                                     "apns-push-type": "alert",       # Указывает, что это системное видимое уведомление
-                                     "apns-expiration": "45"     }
+                            headers=headers
                         )
                         print(f"[PUSH] Уведомление отправлено {target}")
                     except WebPushException as e:
@@ -2186,7 +2190,7 @@ if __name__ == "__main__":
     background-color: #3a6ed6;
     box-shadow: 0 0 15px rgba(45, 92, 184, 0.4);
 }
-const CACHE_NAME = "agora-hub-v56";
+const CACHE_NAME = "agora-hub-v58";
 const ASSETS = [
   "./",
   "./index.html",
