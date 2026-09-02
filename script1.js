@@ -277,35 +277,6 @@ async function handleAuthSubmit() {
     }
 }
 
-//async function subscribeToPush(token) {
-//    if (!token || token === "guest") return;
-//    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
-//
-//    // Запрашиваем права
-//    const permission = await Notification.requestPermission();
-//    if (permission !== "granted") return;
-//
-//    try {
-//        const registration = await navigator.serviceWorker.ready;
-//        const subscription = await registration.pushManager.subscribe({
-//            userVisibleOnly: true,
-//            applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
-//        });
-//
-//        // Отправляем подписку на ваш FastAPI сервер
-//        await fetch(
-//            `${API_URL}/push/subscribe?token=${encodeURIComponent(token)}`,
-//            {
-//                method: "POST",
-//                headers: { "Content-Type": "application/json" },
-//                body: JSON.stringify({ subscription: subscription }),
-//            },
-//        );
-//        console.log("[Push] Успешно подписаны на звонки!");
-//    } catch (e) {
-//        console.error("[Push] Ошибка подписки:", e);
-//    }
-//}
 async function subscribeToPush(token) {
     // Защита от отсутствия токена или гостевого входа
     if (!token || token === "guest") {

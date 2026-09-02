@@ -14,7 +14,8 @@ load_dotenv()
 
 app = FastAPI()
 
-base_path = os.path.dirname(os.path.realpath('main.py'))
+BASE_DIR = os.path.dirname(os.path.realpath('main.py'))
+FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 
 
 # Разрешаем корс 
@@ -341,9 +342,9 @@ async def debug_push_error(request: Request):
 
 @app.get("/index")
 async def getindex():
-    return FileResponse(os.path.join(base_path,'index.html'))
+    return FileResponse(os.path.join(FRONTEND_DIR,'index.html'))
 
-app.mount("/static", StaticFiles(directory=base_path), name="static")
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 if __name__ == "__main__":
     import uvicorn
