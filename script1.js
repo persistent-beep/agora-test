@@ -17,7 +17,6 @@ let currentUIState = "HOME"; // HOME, MENU, CONTENT, AUTH
 let callTemplateCache = null;
 
 // Состояние звонка (WebRTC)
-// Готово к замене на класс FSM (например, fsm.transition('RINGING'))
 let callState = "IDLE"; // IDLE, RINGING_OUT, RINGING_IN, AWAITING_OFFER, CONNECTING, CONNECTED
 let currentCallTarget = null;
 let userRole = "guest";
@@ -32,6 +31,29 @@ let remoteAudioElement = null;
 let pendingOfferSdp = null; // Хранилище входящего оффера
 let pingInterval = null;
 let reconnectTimeout = null; // Таймер автосброса при обрыве
+
+// [CALL_ID] Идентификатор звонка, выданный сервером. Все сигнальные
+// сообщения (offer/answer/candidate/call_end/peer_disconnected) теперь
+// несут call_id — всё, что пришло с чужим call_id, молча игнорируется.
+// Гарантированно убивает «хвосты» старого звонка при быстрой смене.
+let activeCallId = null;
+
+// Таймаут безответности исходящего звонка
+let ringTimeout = null;
+let RING_TIMEOUT_MS = 60000; // 60 секунд
+
+// [FIX RC-3] Счётчик "поколений" звонка. Каждая async-цепочка запоминает
+// текущее значение и проверяет его после каждого await. hangUp() и начало
+// нового звонка инкрементируют счётчик — все зависшие продолжения старого
+// звонка видят, что их сессия мертва, и молча выходят. Это лечит "зомби"-
+// состояния (например, onCallConnected() после того, как юзер уже нажал END).
+let callSeq = 0;
+
+// [FIX RC-2] Очередь сигнальных сообщений. Раньше каждый onmessage запускал
+// СВОЙ async-обработчик, и они перемешивались на await-ах (offer мог
+// обрабатываться параллельно с candidate/answer). Теперь сообщения
+// обрабатываются строго по одному, в порядке прихода.
+let signalingQueue = Promise.resolve();
 
 // Аудио визуализация
 let audioContext = null;
@@ -56,14 +78,72 @@ function debounce(func, delay) {
     };
 }
 
+// [GLARE] Детерминированное разрешение конфликта «обе стороны послали
+// оффер одновременно» алфавитным порядком ролей. Роли уникальны, обе
+// стороны вычисляют одно и то же без переговоров:
+//   моя роль > роли собеседника → я impolite (никогда не уступаю),
+//   иначе → я polite (откатываю свой оффер и принимаю чужой).
+// Ровно одна сторона уступает — всегда сходится.
+function getMyRoleId() {
+    const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
+    return (session.role || userRole || "").toLowerCase();
+}
+
+function isImpolitePeer() {
+    const me = getMyRoleId();
+    const them = (currentCallTarget || "").toLowerCase();
+    if (!me || !them) return false; // не знаем роль — считаем себя polite
+    return me > them;
+}
+
+// [CALL_ID] Сообщение чужого/прошлого звонка? Если у сообщения и у нас
+// есть call_id и они разные — игнор. Если call_id нет (легаси-путь,
+// например сервер перезапускался и потерял реестр) — пропускаем,
+// дальше сработает фильтр по msg.from (вторая линия обороны).
+function isStaleCallMsg(msg) {
+    if (msg.call_id && activeCallId && msg.call_id !== activeCallId) {
+        console.log("[Signal] Сообщение чужого звонка, игнорируем:", msg.type);
+        return true;
+    }
+    return false;
+}
+
+// Таймаут безответности: если за 60с звонок не приняли — сбрасываем
+function startRingTimeout() {
+    clearRingTimeout();
+    ringTimeout = setTimeout(() => {
+        ringTimeout = null;
+        if (callState === "RINGING_OUT") {
+            console.log("[Call] Нет ответа за 60с — сбрасываем звонок");
+            hangUp();
+            updateCallUI("CALL", "btn-green", "NO ANSWER", "#ff4a4a", false);
+        }
+    }, RING_TIMEOUT_MS);
+}
+
+function clearRingTimeout() {
+    if (ringTimeout) {
+        clearTimeout(ringTimeout);
+        ringTimeout = null;
+    }
+}
+
 async function fetchIceServers() {
     if (iceConfig.length > 0) return iceConfig;
     try {
+        // [FIX SECURITY] Передаём токен: без него сервер теперь отдаёт
+        // только публичный STUN, а не TURN-кредитки (см. main.py /ice-servers).
+        const session = JSON.parse(
+            localStorage.getItem("agora_session") || "{}",
+        );
+        const tokenParam = session.token
+            ? `&token=${encodeURIComponent(session.token)}`
+            : "";
         const response = await fetch(
-            `${API_URL}/ice-servers?role=${encodeURIComponent(userRole)}`,
+            `${API_URL}/ice-servers?role=${encodeURIComponent(userRole)}${tokenParam}`,
         );
         const data = await response.json();
-        iceConfig = data.iceServers;
+        iceConfig = data.iceServers || [{ urls: "stun:stun.l.google.com:19302" }];
     } catch (e) {
         console.error("Ошибка ICE, используем резервный:", e);
         iceConfig = [{ urls: "stun:stun.l.google.com:19302" }];
@@ -84,6 +164,7 @@ function urlBase64ToUint8Array(base64String) {
     }
     return outputArray;
 }
+
 // ========== УПРАВЛЕНИЕ ИНТЕРФЕЙСОМ (UI) ==========
 
 function handleLogoClick() {
@@ -208,7 +289,6 @@ function initCallInterface(name) {
         moduleTitle.innerText = name;
         currentUIState = "CONTENT";
 
-        // Получаем элементы
         const logoEl = document.getElementById("logo");
         const menuEl = document.getElementById("menu");
         const contentEl = document.getElementById("content-area");
@@ -237,6 +317,7 @@ function initCallInterface(name) {
         console.error("Ошибка при инициализации интерфейса:", error);
     }
 }
+
 // ========== АВТОРИЗАЦИЯ ==========
 
 async function handleAuthSubmit() {
@@ -253,6 +334,9 @@ async function handleAuthSubmit() {
         if (response.ok) {
             const data = await response.json();
             userRole = data.role;
+            // [FIX] Сбрасываем кэш ICE: после смены аккаунта роль могла
+            // измениться, а старый iceConfig остался бы от прошлой роли.
+            iceConfig = [];
             localStorage.setItem(
                 "agora_session",
                 JSON.stringify({
@@ -262,8 +346,15 @@ async function handleAuthSubmit() {
                 }),
             );
 
-            if (signalingSocket) signalingSocket.close();
+            // [FIX RC-5] Старый сокет закрываем, но его onclose больше не
+            // устраивает шторм reconnect-циклов: в connectSignaling/onclose
+            // стоит identity-guard (см. ниже). Сначала создаём новый сокет,
+            // потом закрываем старый — тогда onclose старого видит, что он
+            // уже не актуален, и молчит.
+            const oldSocket = signalingSocket;
             connectSignaling(tokenValue);
+            if (oldSocket) oldSocket.close();
+
             subscribeToPush(tokenValue);
             toMenu();
         } else {
@@ -291,10 +382,8 @@ async function subscribeToPush(token) {
     }
 
     try {
-        // Ждём активации Service Worker
         const registration = await navigator.serviceWorker.ready;
 
-        // Удаляем старую подписку, чтобы не копились дубли
         const existing = await registration.pushManager.getSubscription();
         if (existing) await existing.unsubscribe();
 
@@ -309,7 +398,6 @@ async function subscribeToPush(token) {
             applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
         });
 
-        // Отправляем на сервер
         const response = await fetch(
             `${API_URL}/push/subscribe?token=${encodeURIComponent(token)}`,
             {
@@ -320,10 +408,10 @@ async function subscribeToPush(token) {
         );
 
         if (response.ok) {
-            console.log("[Push] ✅ Успешно подписан на звонки");
+            console.log("[Push] Успешно подписан на звонки");
         } else {
             console.error(
-                "[Push] ❌ Ошибка сохранения подписки, статус:",
+                "[Push] Ошибка сохранения подписки, статус:",
                 response.status,
             );
         }
@@ -331,8 +419,15 @@ async function subscribeToPush(token) {
         console.error("[Push] Ошибка подписки:", error);
     }
 }
+
 async function handleLogout() {
-    if (signalingSocket) signalingSocket.close();
+    if (signalingSocket) {
+        // [FIX RC-5] Гасим обработчики ДО close(), чтобы onclose не запустил
+        // автопереподключение перед location.reload().
+        signalingSocket.onclose = null;
+        signalingSocket.onerror = null;
+        signalingSocket.close();
+    }
 
     // --- ОТПИСКА ОТ PUSH ПРИ ВЫХОДЕ ---
     if ("serviceWorker" in navigator) {
@@ -346,7 +441,6 @@ async function handleLogout() {
                     localStorage.getItem("agora_session") || "{}",
                 );
                 if (session.token) {
-                    // Отправляем запрос на бэкенд, чтобы удалить подписку из Supabase
                     await fetch(
                         `${API_URL}/push/unsubscribe?token=${
                             encodeURIComponent(session.token)
@@ -360,7 +454,6 @@ async function handleLogout() {
                         },
                     );
                 }
-                // Отписываем сам браузер
                 await subscription.unsubscribe();
                 console.log(
                     "[Push] Успешно деактивировали пуши для этого устройства.",
@@ -402,34 +495,41 @@ async function setupAudio() {
 
 async function createPeerConnection() {
     await fetchIceServers();
-    pc = new RTCPeerConnection({
+    const newPc = new RTCPeerConnection({
         iceServers: iceConfig,
         iceTransportPolicy: "all",
     });
+    // [FIX] Глобальная ссылка обновляется СРАЗУ после конструирования,
+    // а не после всех await — между fetchIceServers и созданием pc
+    // сигнальные сообщения больше могут поймать "pc ещё нет".
+    pc = newPc;
     iceQueue = []; // Сбрасываем очередь для нового соединения
 
     // === ДИАГНОСТИКА ===
     const startTime = performance.now();
     console.log(
         "[ICE] PeerConnection создан, политика:",
-        pc.iceTransportPolicy || "all",
+        newPc.iceTransportPolicy || "all",
     );
 
-    pc.onicegatheringstatechange = () => {
+    newPc.onicegatheringstatechange = () => {
         console.log(
-            `[ICE] gathering state → ${pc.iceGatheringState} (через ${
+            `[ICE] gathering state → ${newPc.iceGatheringState} (через ${
                 ((performance.now() - startTime) / 1000).toFixed(1)
             }s)`,
         );
     };
 
-    pc.oniceconnectionstatechange = async () => {
-        console.log(`[ICE] connection state → ${pc.iceConnectionState}`);
+    newPc.oniceconnectionstatechange = async () => {
+        console.log(`[ICE] connection state → ${newPc.iceConnectionState}`);
+
+        // [FIX RC-9] Соединение уже закрыто/заменено — выходим
+        if (pc !== newPc) return;
 
         // 1. ЕСЛИ СВЯЗЬ ВОССТАНОВИЛАСЬ
         if (
-            pc.iceConnectionState === "connected" ||
-            pc.iceConnectionState === "completed"
+            newPc.iceConnectionState === "connected" ||
+            newPc.iceConnectionState === "completed"
         ) {
             if (reconnectTimeout) {
                 clearTimeout(reconnectTimeout); // Выключаем таймер смерти
@@ -447,19 +547,22 @@ async function createPeerConnection() {
 
         // 2. ЕСЛИ СВЯЗЬ РАЗОРВАЛАСЬ (Смена сети, метро, сел телефон)
         if (
-            pc.iceConnectionState === "disconnected" ||
-            pc.iceConnectionState === "failed"
+            newPc.iceConnectionState === "disconnected" ||
+            newPc.iceConnectionState === "failed"
         ) {
             if (callState === "CONNECTED") {
                 console.log(
                     "[ICE] Смена сети или обрыв! Запуск ICE Restart...",
                 );
+                // [FIX UX] Кнопка остается АКТИВНОЙ: пользователь должен иметь
+                // возможность самому сбросить зависающий звонок, а не ждать
+                // 40 секунд заблокированной кнопкой.
                 updateCallUI(
-                    "RECONNECTING...",
+                    "END CALL",
                     "btn-vosklet",
                     "RECONNECTING",
                     "#ff9900",
-                    true,
+                    false,
                 );
 
                 // --- ЗАПУСКАЕМ ТАЙМЕР СМЕРТИ ЗВОНКА (40 секунд) ---
@@ -468,29 +571,23 @@ async function createPeerConnection() {
                         console.log(
                             "[ICE] Время на переподключение вышло. Сбрасываем звонок.",
                         );
+                        reconnectTimeout = null;
                         hangUp();
-                        // Слегка меняем текст после hangUp, чтобы было понятно, почему сбросилось
-                        updateCallUI(
-                            "CALL",
-                            "btn-green",
-                            "CONNECTION LOST",
-                            "#ff4a4a",
-                            false,
-                        );
                     }, 40000);
                 }
 
                 try {
-                    // Создаем оффер с флагом iceRestart
-                    const offer = await pc.createOffer({ iceRestart: true });
-                    await pc.setLocalDescription(offer);
+                    const offer = await newPc.createOffer({ iceRestart: true });
+                    // [FIX RC-9] Пока собирали оффер, звонок могли сбросить
+                    if (pc !== newPc || callState !== "CONNECTED") return;
+                    await newPc.setLocalDescription(offer);
+                    if (pc !== newPc || callState !== "CONNECTED") return;
 
-                    // Отправляем собеседнику
                     if (signalingSocket?.readyState === WebSocket.OPEN) {
                         signalingSocket.send(JSON.stringify({
                             type: "offer",
                             target: currentCallTarget,
-                            sdp: pc.localDescription.sdp,
+                            sdp: newPc.localDescription.sdp,
                         }));
                     }
                 } catch (err) {
@@ -503,8 +600,7 @@ async function createPeerConnection() {
         }
     };
     // +===== DIAGNOSTICS ends
-    pc.onicecandidate = (event) => {
-        // диагностика
+    newPc.onicecandidate = (event) => {
         if (event.candidate) {
             console.log(
                 `[ICE] кандидат: тип=${event.candidate.type}, протокол=${event.candidate.protocol}, адрес=${event.candidate.address}`,
@@ -513,10 +609,9 @@ async function createPeerConnection() {
             console.log(
                 `[ICE] кандидаты закончились (end-of-candidates) через ${
                     ((performance.now() - startTime) / 1000).toFixed(1)
-                }s`,
+                }s)`,
             );
         }
-        // твоя существующая логика отправки
         if (event.candidate && signalingSocket?.readyState === WebSocket.OPEN) {
             signalingSocket.send(JSON.stringify({
                 type: "candidate",
@@ -526,7 +621,7 @@ async function createPeerConnection() {
         }
     };
 
-    pc.ontrack = (event) => {
+    newPc.ontrack = (event) => {
         if (remoteAudioElement) remoteAudioElement.srcObject = null;
         remoteAudioElement = new Audio();
         remoteAudioElement.srcObject = event.streams[0];
@@ -548,23 +643,39 @@ async function createPeerConnection() {
 
     if (localStream) {
         localStream.getTracks().forEach((track) =>
-            pc.addTrack(track, localStream)
+            newPc.addTrack(track, localStream)
         );
     }
 }
 
 // Надежное добавление ICE кандидатов (решение Race Condition)
 async function addIceCandidate(candidate) {
-    if (pc.remoteDescription) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    // [FIX] pc может быть уже сброшен — не падаем.
+    // [GLARE] В состоянии have-local-offer (наш оффер в полёте) кандидаты
+    // применять нельзя — они относятся к другому поколению SDP. Кладём их
+    // в очередь: flushIceQueue() применит после завершения negotiation.
+    if (pc && pc.remoteDescription && pc.signalingState !== "have-local-offer") {
+        try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+            // После rollback/ICE-restart могут прилетать кандидаты устаревшего
+            // поколения — это ожидаемо, не роняем обработчик.
+            console.warn("[ICE] Кандидат отклонён:", e?.message || e);
+        }
     } else {
         iceQueue.push(candidate);
     }
 }
 
 async function flushIceQueue() {
-    while (iceQueue.length) {
-        await pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift()));
+    // [FIX] Проверяем pc на каждой итерации: звонок могли сбросить,
+    // пока мы добавляли предыдущего кандидата.
+    while (iceQueue.length && pc) {
+        try {
+            await pc.addIceCandidate(new RTCIceCandidate(iceQueue.shift()));
+        } catch (e) {
+            console.warn("[ICE] Кандидат из очереди отклонён:", e?.message || e);
+        }
     }
 }
 
@@ -590,33 +701,52 @@ function onCallButtonClick() {
 }
 
 async function startOutgoingCall() {
+    const seq = ++callSeq; // [FIX RC-3] фиксируем поколение звонка
     try {
+        // [FIX] Раньше signalingSocket.send() без проверки readyState кидал
+        // TypeError и показывал "CONNECTION FAILED" вместо понятной причины.
+        if (!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) {
+            throw new Error("NO_SIGNALING");
+        }
+
         updateCallUI("CALLING>>>", "btn-blue", "CONNECTING...", "#aaa", true);
         callState = "RINGING_OUT";
 
         await setupAudio();
+        if (seq !== callSeq) return; // [FIX RC-3] звонок уже сброшен
         await createPeerConnection();
+        if (seq !== callSeq) return;
 
         signalingSocket.send(
             JSON.stringify({ type: "call_request", target: currentCallTarget }),
         );
+        startRingTimeout(); // [TIMEOUT] 60с на ответ, иначе NO ANSWER
         updateCallUI("CALLING>>>", "btn-blue", "RINGING>>>", "#aaa", true);
     } catch (err) {
         console.error("Call start error:", err);
+        // [FIX] Определяем отказ в микрофоне по стандартному err.name,
+        // а не по подстроке в сообщении (зависит от языка браузера).
+        const micDenied =
+            err?.name === "NotAllowedError" || err?.name === "NotFoundError";
         updateCallUI(
             "CALL",
             "btn-green",
-            err.message.includes("microphone")
+            micDenied
                 ? "MIC ACCESS DENIED"
-                : "CONNECTION FAILED",
+                : (err?.message === "NO_SIGNALING"
+                    ? "NO CONNECTION"
+                    : "CONNECTION FAILED"),
             "#ff4a4a",
             false,
         );
+        // [FIX] Раньше callState зависал в RINGING_OUT после ошибки
+        callState = "IDLE";
         cleanupPeerConnection();
     }
 }
 
 async function answerCall() {
+    const seq = ++callSeq; // [FIX RC-3]
     try {
         updateCallUI(
             "CONNECTING...",
@@ -628,47 +758,74 @@ async function answerCall() {
         callState = "AWAITING_OFFER";
 
         await fetchIceServers();
+        if (seq !== callSeq) return; // [FIX RC-3]
         if (!localStream) await setupAudio();
+        if (seq !== callSeq) return;
         if (!pc) await createPeerConnection();
+        if (seq !== callSeq) return;
 
-        signalingSocket.send(
-            JSON.stringify({ type: "accept_call", target: currentCallTarget }),
-        );
-        // Если оффер уже пришел (сохранен в переменную), обрабатываем его сразу!
+        if (signalingSocket?.readyState === WebSocket.OPEN) {
+            signalingSocket.send(
+                JSON.stringify({ type: "accept_call", target: currentCallTarget }),
+            );
+        }
+
+        // [FIX RC-1] Если оффер уже пришел, пока мы готовили pc (несколько
+        // await выше) — он лежит в pendingOfferSdp, забираем его.
+        // Обратная гонка (оффер придет чуть позже) закрыта в case "offer":
+        // там при AWAITING_OFFER и отсутствующем pc оффер тоже кладется
+        // в pendingOfferSdp, а не валился в null pc.
         if (pendingOfferSdp) {
             const sdp = pendingOfferSdp;
-            pendingOfferSdp = null; // Чистим переменную
-            await processOfferAndAnswer(sdp);
+            pendingOfferSdp = null;
+            await processOfferAndAnswer(sdp, seq);
         }
     } catch (err) {
         console.error("Answer error:", err);
+        pendingOfferSdp = null; // [FIX] не тащим битый оффер в следующую попытку
         updateCallUI("ANSWER", "btn-green", "ERROR", "#ff4a4a", false);
         callState = "RINGING_IN"; // Возврат в предыдущее состояние
     }
 }
 
-async function processOfferAndAnswer(sdp) {
+async function processOfferAndAnswer(sdp, seq = callSeq) {
+    if (!pc) return; // [FIX] null-guard
+    const myPc = pc;
+
     callState = "CONNECTING";
     updateCallUI("CONNECTING...", "btn-blue", "CONNECTING...", "#aaa", true);
 
-    await pc.setRemoteDescription(
+    await myPc.setRemoteDescription(
         new RTCSessionDescription({ type: "offer", sdp }),
     );
+    if (pc !== myPc || seq !== callSeq) return; // [FIX RC-3] сбросили, пока ждали
+
     await flushIceQueue(); // Apply queued candidates
+    if (pc !== myPc || seq !== callSeq) return;
 
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const answer = await myPc.createAnswer();
+    if (pc !== myPc || seq !== callSeq) return;
+    await myPc.setLocalDescription(answer);
+    if (pc !== myPc || seq !== callSeq) return;
+    await flushIceQueue(); // [GLARE] кандидаты, накопленные за время negotiation
+    if (pc !== myPc || seq !== callSeq) return;
 
-    signalingSocket.send(JSON.stringify({
-        type: "answer",
-        target: currentCallTarget,
-        sdp: pc.localDescription.sdp,
-    }));
+    if (signalingSocket?.readyState === WebSocket.OPEN) {
+        signalingSocket.send(JSON.stringify({
+            type: "answer",
+            target: currentCallTarget,
+            sdp: myPc.localDescription.sdp,
+        }));
+    }
 
     onCallConnected();
 }
 
 function onCallConnected() {
+    // [FIX RC-3] Если звонок уже сброшен (hangUp успел пройти мимо),
+    // не "оживляем" его: не поднимаем callState и не запускаем таймер.
+    if (callState !== "CONNECTING" && callState !== "RINGING_OUT") return;
+    clearRingTimeout(); // [TIMEOUT] дозвонились — таймаут не нужен
     callState = "CONNECTED";
     updateCallUI("END CALL", "btn-red", "CONNECTED", "#4aff4a", false);
     startTimer();
@@ -677,10 +834,14 @@ function onCallConnected() {
 function hangUp() {
     if (callState === "IDLE") return;
 
+    // [FIX RC-3] Аннулируем все незавершённые async-цепочки этого звонка
+    callSeq++;
+
     if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
         reconnectTimeout = null;
     }
+    clearRingTimeout(); // [TIMEOUT]
 
     // Проверяем, что сокет не просто существует, но и ОТКРЫТ
     if (
@@ -688,7 +849,11 @@ function hangUp() {
         currentCallTarget
     ) {
         signalingSocket.send(
-            JSON.stringify({ type: "call_end", target: currentCallTarget }),
+            JSON.stringify({
+                type: "call_end",
+                target: currentCallTarget,
+                call_id: activeCallId, // [CALL_ID] сервер валидирует по своему реестру
+            }),
         );
     } else {
         console.warn("[Signal] Не удалось отправить call_end — нет сети.");
@@ -728,39 +893,80 @@ function cleanupPeerConnection() {
     remoteAnalyser = null;
     remoteDataArray = null;
     iceQueue = [];
+    // [CALL_ID] ID звонка живёт ровно столько же, сколько соединение
+    activeCallId = null;
+    // [FIX RC-4] Обязательно чистим отложенный оффер. Раньше SDP от
+    // ПРОШЛОГО (пропущенного) звонка доживал до следующего звонка, и
+    // answerCall() строил соединение по устаревшему описанию.
+    pendingOfferSdp = null;
 }
 
 // ========== СИГНАЛИНГ (WebSocket) ==========
 
 function connectSignaling(token) {
-    if (pingInterval) clearInterval(pingInterval);
-    signalingSocket = new WebSocket(
+    if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+    }
+
+    // [FIX RC-5] Держим ЛОКАЛЬНУЮ ссылку на создаваемый сокет. В onclose
+    // сравниваем signalingSocket с ней: если нас уже заменили новым сокетом —
+    // это закрытие устаревшего, его игнорируем. Это лечит:
+    //   - убийство ping-интервала НОВОГО сокета старым onclose;
+    //   - двойной reconnect (два живых сокета одновременно).
+    const socket = new WebSocket(
         `${WS_URL}/ws?token=${encodeURIComponent(token)}`,
     );
+    signalingSocket = socket;
 
-    signalingSocket.onopen = () => {
+    socket.onopen = () => {
+        if (signalingSocket !== socket) return; // уже не актуален
         console.log("[Signal] Connected as", token);
 
         pingInterval = setInterval(() => {
-            if (signalingSocket.readyState === WebSocket.OPEN) {
-                signalingSocket.send(JSON.stringify({ type: "ping" }));
+            if (signalingSocket === socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: "ping" }));
             }
         }, 20000);
     };
 
-    signalingSocket.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
-
+    socket.onmessage = (event) => {
+        if (signalingSocket !== socket) return; // сообщения старого сокета
+        let msg;
+        try {
+            msg = JSON.parse(event.data);
+        } catch (e) {
+            console.warn("[Signal] Некорректный JSON:", e);
+            return;
+        }
         if (msg.type === "pong") return;
 
-        await handleSignalingMessage(msg);
+        // [FIX RC-2] Все сообщения обрабатываются строго последовательно
+        signalingQueue = signalingQueue
+            .then(() => handleSignalingMessage(msg))
+            .catch((e) => console.error("[Signal] Ошибка обработки:", e));
     };
 
-    signalingSocket.onclose = (event) => {
+    socket.onclose = (event) => {
+        // [FIX RC-5] Закрытие устаревшего сокета — нас уже заменили
+        if (signalingSocket !== socket) return;
+
         clearInterval(pingInterval);
+        pingInterval = null;
         console.log(
             `[Signal] Disconnected. Code ${event.code}, Reason: ${event.reason}`,
         );
+
+        // [FIX RC-5] 4002 = сервер заменил нас новой сессией (второе
+        // устройство / повторный логин). Автопереподключение здесь устроило
+        // бы бесконечную "войну сокетов" между устройствами.
+        if (event.code === 4002) {
+            console.warn(
+                "[Signal] Сессия заменена новым подключением (4002). Автопереподключение отключено.",
+            );
+            return;
+        }
+
         if (event.code === 1006) {
             console.warn("proxy (1006)");
         }
@@ -768,33 +974,44 @@ function connectSignaling(token) {
             hangUp();
         } else if (callState === "CONNECTED") {
             const statusEl = document.getElementById("call-status");
-            if (statusEl) statusEl.innerText = "Webscoket пересоединяем";
+            if (statusEl) {
+                statusEl.innerText = "WEBSOCKET RECONNECTING";
+                statusEl.style.color = "#ff9900";
+            }
         }
 
         setTimeout(() => {
+            if (signalingSocket !== socket) return; // уже переподключились
             const session = JSON.parse(
                 localStorage.getItem("agora_session") || "{}",
             );
             if (session.token) connectSignaling(session.token);
         }, 3000);
     };
-    signalingSocket.onerror = (err) => console.error("[Signal] Error", err);
+
+    socket.onerror = (err) => console.error("[Signal] Error", err);
 }
 
 async function handleSignalingMessage(msg) {
     switch (msg.type) {
         case "start_offer": {
             if (callState !== "RINGING_OUT") return;
+            if (!pc) return; // [FIX] null-guard
+            if (msg.call_id) activeCallId = msg.call_id; // [CALL_ID] резервная подстраховка
             try {
                 const offer = await pc.createOffer();
+                if (!pc || callState !== "RINGING_OUT") return; // [FIX RC-3]
                 await pc.setLocalDescription(offer);
-                signalingSocket.send(
-                    JSON.stringify({
-                        type: "offer",
-                        target: currentCallTarget,
-                        sdp: pc.localDescription.sdp,
-                    }),
-                );
+                if (!pc || callState !== "RINGING_OUT") return;
+                if (signalingSocket?.readyState === WebSocket.OPEN) {
+                    signalingSocket.send(
+                        JSON.stringify({
+                            type: "offer",
+                            target: currentCallTarget,
+                            sdp: pc.localDescription.sdp,
+                        }),
+                    );
+                }
                 updateCallUI(
                     "CALLING>>>",
                     "btn-blue",
@@ -811,7 +1028,9 @@ async function handleSignalingMessage(msg) {
 
         case "incoming_call": {
             if (callState !== "IDLE") return; // Защита: если уже звоним, игнорируем
+            callSeq++; // [FIX RC-3] новое поколение — гасим хвосты старого
             currentCallTarget = msg.from;
+            activeCallId = msg.call_id || null; // [CALL_ID]
             initCallInterface(msg.from);
             callState = "RINGING_IN";
             fetchIceServers(); // Предзагрузка ICE в фоне
@@ -825,41 +1044,123 @@ async function handleSignalingMessage(msg) {
             break;
         }
 
+        case "call_created": {
+            // [CALL_ID] Сервер зарегистрировал наш исходящий звонок и выдал ID.
+            // Придёт сразу после call_request — раньше, чем любые offer/candidate.
+            if (callState === "RINGING_OUT") {
+                activeCallId = msg.call_id || null;
+            }
+            break;
+        }
+
+        case "busy": {
+            // [BUSY] Абонент уже в звонке — сервер сказал сразу, не ждём 60с.
+            if (callState !== "RINGING_OUT") return;
+            console.log("[Call] Абонент занят");
+            callSeq++; // гасим незавершённые async-цепочки
+            clearRingTimeout();
+            callState = "IDLE";
+            cleanupPeerConnection();
+            updateCallUI("CALL", "btn-green", "LINE BUSY", "#ff4a4a", false);
+            stopTimer();
+            stopCallSimulation();
+            setTimeout(() => {
+                if (currentUIState === "CONTENT") renderConnectModule();
+            }, 1500);
+            break;
+        }
+
         case "offer": {
+            // [CALL_ID] хвосты чужого/прошлого звонка — молча игнорируем
+            if (isStaleCallMsg(msg)) return;
+
+            // [FIX] Офферы не от текущего собеседника игнорируем,
+            // кроме случая IDLE/RINGING_IN (тогда это новый входящий).
+            if (
+                msg.from && currentCallTarget &&
+                msg.from !== currentCallTarget &&
+                callState !== "IDLE" && callState !== "RINGING_IN"
+            ) {
+                console.warn("[Signal] Оффер от постороннего абонента, игнорируем:", msg.from);
+                return;
+            }
+
             if (callState === "CONNECTED") {
                 // ЭТО ICE RESTART ОТ СОБЕСЕДНИКА (ОН СМЕНИЛ СЕТЬ)
                 console.log(
                     "[ICE] Получен запрос на переподключение сети от собеседника!",
                 );
-                updateCallUI(
-                    "RECONNECTING...",
-                    "btn-vosklet",
-                    "SYNC...",
-                    "#ff9900",
-                    true,
-                );
+                if (!pc) return; // [FIX] null-guard
+                const myPc = pc; // [FIX RC-3]
 
-                await pc.setRemoteDescription(
-                    new RTCSessionDescription({ type: "offer", sdp: msg.sdp }),
-                );
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-
-                signalingSocket.send(JSON.stringify({
-                    type: "answer",
-                    target: currentCallTarget,
-                    sdp: pc.localDescription.sdp,
-                }));
+                // [GLARE] ОБА одновременно послали оффер (мы только что
+                // отправили свой restart-оффер, он ещё в полёте).
+                // Решаем детерминированно, по алфавиту ролей — см. isImpolitePeer().
+                if (myPc.signalingState === "have-local-offer") {
+                    if (isImpolitePeer()) {
+                        // Мы impolite: наш оффер главнее, входящий игнорируем.
+                        // Своё состояние получит answer от собеседника.
+                        console.log("[Glare] Мы impolite — игнорируем входящий оффер, ждём answer на свой");
+                        return;
+                    }
+                    // Мы polite: откатываем свой оффер и принимаем их.
+                    console.log("[Glare] Мы polite — откатываем свой оффер, принимаем входящий");
+                    await myPc.setRemoteDescription(
+                        new RTCSessionDescription({ type: "rollback" }),
+                    );
+                    if (pc !== myPc || callState !== "CONNECTED") return; // [FIX RC-3]
+                }
 
                 updateCallUI(
                     "END CALL",
-                    "btn-red",
-                    "CONNECTED",
-                    "#4aff4a",
+                    "btn-vosklet",
+                    "SYNC...",
+                    "#ff9900",
                     false,
                 );
+
+                try {
+                    await myPc.setRemoteDescription(
+                        new RTCSessionDescription({ type: "offer", sdp: msg.sdp }),
+                    );
+                    if (pc !== myPc || callState !== "CONNECTED") return; // [FIX RC-3]
+                    const answer = await myPc.createAnswer();
+                    if (pc !== myPc || callState !== "CONNECTED") return;
+                    await myPc.setLocalDescription(answer);
+                    if (pc !== myPc || callState !== "CONNECTED") return;
+                    await flushIceQueue(); // [GLARE] кандидаты, ждущие в очереди
+                    if (pc !== myPc || callState !== "CONNECTED") return;
+
+                    if (signalingSocket?.readyState === WebSocket.OPEN) {
+                        signalingSocket.send(JSON.stringify({
+                            type: "answer",
+                            target: currentCallTarget,
+                            sdp: myPc.localDescription.sdp,
+                        }));
+                    }
+
+                    updateCallUI(
+                        "END CALL",
+                        "btn-red",
+                        "CONNECTED",
+                        "#4aff4a",
+                        false,
+                    );
+                } catch (e) {
+                    console.error("[ICE] Ошибка обработки restart-оффера:", e);
+                }
             } else if (callState === "AWAITING_OFFER") {
-                await processOfferAndAnswer(msg.sdp);
+                // [FIX RC-1] КЛЮЧЕВАЯ ТОЧКА: оффер пришел, пока answerCall()
+                // еще внутри своих await (fetchIceServers/setupAudio/
+                // createPeerConnection). Раньше здесь сразу звался
+                // processOfferAndAnswer и падал на null pc — оффер терялся,
+                // звонок зависал. Теперь кладем в pendingOfferSdp: answerCall()
+                // заберет его сразу после создания pc.
+                if (!pc) {
+                    pendingOfferSdp = msg.sdp;
+                } else {
+                    await processOfferAndAnswer(msg.sdp);
+                }
             } else if (callState === "IDLE" || callState === "RINGING_IN") {
                 // Оффер пришел ДО того, как пользователь нажал ANSWER
                 initCallInterface(msg.from);
@@ -872,6 +1173,10 @@ async function handleSignalingMessage(msg) {
                     false,
                 );
 
+                // [CALL_ID] холодный старт из push: incoming_call мы не видели
+                // (ушёл в мёртвый сокет), ID приходит вместе с оффером
+                if (msg.call_id) activeCallId = msg.call_id;
+
                 // Просто сохраняем SDP в переменную. Когда юзер нажмет кнопку,
                 // функция answerCall() сама его подхватит.
                 pendingOfferSdp = msg.sdp;
@@ -880,14 +1185,51 @@ async function handleSignalingMessage(msg) {
         }
 
         case "answer": {
-            if (callState !== "RINGING_OUT" && callState !== "CONNECTING") {
+            // [CALL_ID] хвосты чужого звонка игнорируем
+            if (isStaleCallMsg(msg)) return;
+
+            // [FIX RESTART-ANSWER] Раньше здесь был жёсткий фильтр
+            // "RINGING_OUT|CONNECTING" — из-за него answer на наш
+            // ICE-restart (мы уже CONNECTED, signalingState = have-local-offer)
+            // ВЫБРАСЫВАЛСЯ, и рестарт зависал навсегда. Теперь такой answer
+            // легально применяется.
+            const isRestartAnswer =
+                callState === "CONNECTED" && pc &&
+                pc.signalingState === "have-local-offer";
+            if (
+                callState !== "RINGING_OUT" && callState !== "CONNECTING" &&
+                !isRestartAnswer
+            ) {
                 return;
             }
-            await pc.setRemoteDescription(
-                new RTCSessionDescription({ type: "answer", sdp: msg.sdp }),
-            );
-            await flushIceQueue();
-            onCallConnected();
+            if (!pc) return; // [FIX] null-guard
+            try {
+                await pc.setRemoteDescription(
+                    new RTCSessionDescription({ type: "answer", sdp: msg.sdp }),
+                );
+                if (!pc) return; // [FIX RC-3] сбросили, пока ждали
+                await flushIceQueue();
+                if (isRestartAnswer) {
+                    // Это ответ на наш ICE-restart — звонок уже подключён,
+                    // таймер идёт. Просто восстанавливаем UI после SYNC...
+                    updateCallUI(
+                        "END CALL",
+                        "btn-red",
+                        "CONNECTED",
+                        "#4aff4a",
+                        false,
+                    );
+                    if (reconnectTimeout) {
+                        clearTimeout(reconnectTimeout);
+                        reconnectTimeout = null;
+                    }
+                } else {
+                    onCallConnected();
+                }
+            } catch (e) {
+                console.error("[Signal] Не удалось применить answer:", e);
+                hangUp();
+            }
             break;
         }
 
@@ -899,11 +1241,19 @@ async function handleSignalingMessage(msg) {
                 );
                 return;
             }
+            // [CALL_ID] хвосты чужого звонка игнорируем
+            if (isStaleCallMsg(msg)) return;
+            // [FIX] Кандидат не от текущего собеседника — мусор прошлой сессии
+            if (msg.from && currentCallTarget && msg.from !== currentCallTarget) {
+                return;
+            }
             if (pc) await addIceCandidate(msg.candidate);
             break;
         }
 
         case "peer_disconnected": {
+            // [CALL_ID] сброс чужого/прошлого звонка не должен ронять текущий
+            if (isStaleCallMsg(msg)) return;
             hangUp();
             break;
         }
@@ -917,7 +1267,6 @@ function toggleMute() {
 
     isMuted = !isMuted;
 
-    // ФИЗИЧЕСКИ отключаем/включаем звук
     const audioTrack = localStream.getAudioTracks()[0];
     if (audioTrack) {
         audioTrack.enabled = !isMuted;
@@ -944,7 +1293,7 @@ async function activateVosklet() {
     const statusEl = document.getElementById("call-status");
 
     if (localStream?.getAudioTracks()[0]?.enabled) {
-        btn.innerText = "MIC OK ✓";
+        btn.innerText = "MIC OK";
         btn.style.backgroundColor = "#2b9348";
         return;
     }
@@ -964,11 +1313,11 @@ async function activateVosklet() {
         } else {
             testStream.getTracks().forEach((t) => t.stop());
         }
-        btn.innerText = "MIC GRANTED ✓";
+        btn.innerText = "MIC GRANTED";
         btn.style.backgroundColor = "#2b9348";
         if (statusEl) statusEl.innerText = "MIC READY";
     } catch (err) {
-        btn.innerText = "MIC BLOCKED ✗";
+        btn.innerText = "MIC BLOCKED";
         btn.style.backgroundColor = "#bc2d2d";
         if (statusEl) {
             statusEl.innerText = "ALLOW MIC IN BROWSER";
@@ -1016,7 +1365,9 @@ function startWaveAnimation() {
     const ctxRemote = document.getElementById("remote-canvas")?.getContext(
         "2d",
     );
-    const ctxMic = document.getElementById("mic-canvas")?.getContext("2d");
+    const ctxMic = document.getElementById("mic-canvas")?.getContext(
+        "2d",
+    );
     if (!ctxRemote || !ctxMic) return;
 
     function draw(ctx, color, volumeData) {
@@ -1075,6 +1426,9 @@ window.addEventListener("load", () => {
     // 1. Подключаем сокеты, если юзер уже залогинен
     const session = JSON.parse(localStorage.getItem("agora_session") || "{}");
     if (session.token) {
+        // [FIX] Роль не восстанавливалась после перезагрузки страницы —
+        // userRole оставался "guest" (нужен для glare-сравнения и ICE)
+        userRole = session.role || "guest";
         connectSignaling(session.token);
         if (Notification.permission === "granted") {
             subscribeToPush(session.token);
@@ -1107,34 +1461,35 @@ window.addEventListener("load", () => {
     navigator.serviceWorker.addEventListener("message", (event) => {
         if (!event.data) return;
 
-        if (event.data && event.data.type === "WAKE_UP_CALL") {
+        if (event.data.type === "WAKE_UP_CALL") {
             const caller = event.data.caller;
             console.log(`[Push] Проснулись от звонка от ${caller}`);
 
-            initCallInterface(caller);
-            callState = "RINGING_IN";
-            updateCallUI(
-                "ANSWER",
-                "btn-green",
-                "INCOMING CALL",
-                "#ff9900",
-                false,
-            );
+            // [FIX RC-8] Пуш больше НЕ перезаписывает активный звонок.
+            // Раньше клик по уведомлению от другого абонента во время
+            // разговора подменял UI и callState, а старый звонок продолжал
+            // жить (поток-сирота).
+            if (callState === "IDLE") {
+                callSeq++;
+                initCallInterface(caller);
+                callState = "RINGING_IN";
+                updateCallUI(
+                    "ANSWER",
+                    "btn-green",
+                    "INCOMING CALL",
+                    "#ff9900",
+                    false,
+                );
+            }
         }
         if (event.data.type === "CALL_DECLINED") {
             console.log("[Push] Звонок был отклонен или сброшен");
 
-            // Сбрасываем глобальное состояние звонка
+            // hangUp() сам сбросит состояние и вернёт список контактов.
+            // [FIX] Убран updateCallUI с чёрным текстом (#000000) и
+            // заблокированной кнопкой — раньше после отклонения звонка
+            // кнопка CALL оставалась навсегда disabled.
             hangUp();
-
-            // Закрываем интерфейс звонка или обновляем UI на дефолтный
-            updateCallUI(
-                "CALL",
-                "btn-blue",
-                "READY",
-                "#000000",
-                true,
-            );
         }
     });
 
@@ -1142,7 +1497,7 @@ window.addEventListener("load", () => {
     const urlParams = new URLSearchParams(window.location.search);
     const callerFromPush = urlParams.get("call");
 
-    if (callerFromPush) {
+    if (callerFromPush && callState === "IDLE") {
         // Очищаем URL от ?call=..., НО сохраняем правильную папку (например, /agora-test/)
         window.history.replaceState(
             {},
@@ -1151,76 +1506,73 @@ window.addEventListener("load", () => {
         );
 
         // Разворачиваем интерфейс звонка
+        callSeq++;
         initCallInterface(callerFromPush);
         callState = "RINGING_IN";
         updateCallUI("ANSWER", "btn-green", "INCOMING CALL", "#ff9900", false);
     }
 });
 
-// Добавляем восстановление интерфейса, если пользователь просто свернул и развернул приложение
+// [FIX] Два одинаковых обработчика visibilitychange объединены в один.
 document.addEventListener("visibilitychange", () => {
     if (!document.hidden && currentUIState === "CONTENT") {
-        document.getElementById("logo").className = "logo-side";
-        document.getElementById("content-area").classList.add(
-            "content-visible",
-        );
+        logo.className = "logo-side";
+        contentArea.classList.add("content-visible");
     }
 });
+
 // ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========
-navigator.mediaDevices.addEventListener("devicechange", async () => {
-    console.log("[Audio] Обнаружено изменение аудиоустройств!");
+// [FIX] devicechange не поддерживается в Safari/iOS — добавлен guard
+if (
+    navigator.mediaDevices &&
+    typeof navigator.mediaDevices.addEventListener === "function"
+) {
+    navigator.mediaDevices.addEventListener("devicechange", async () => {
+        console.log("[Audio] Обнаружено изменение аудиоустройств!");
 
-    // Делаем что-то только если звонок активен
-    if (callState === "CONNECTED" && pc && localStream) {
-        try {
-            // Запрашиваем новый микрофон (браузер сам выберет активный по умолчанию)
-            const newStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-            });
+        // Делаем что-то только если звонок активен
+        if (callState === "CONNECTED" && pc && localStream) {
+            try {
+                const newStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    },
+                });
 
-            const newTrack = newStream.getAudioTracks()[0];
-
-            // Находим текущий аудио-поток, который отправляется собеседнику
-            const sender = pc.getSenders().find((s) =>
-                s.track?.kind === "audio"
-            );
-
-            if (sender) {
-                // Горячая замена трека БЕЗ перезапуска звонка (без ICE Restart)
-                await sender.replaceTrack(newTrack);
-
-                // Обновляем наш локальный анализатор для визуализации волн
-                localStream.getTracks().forEach((t) => t.stop()); // гасим старый микрофон
-                localStream = newStream;
-
-                if (audioContext && audioContext.state !== "closed") {
-                    // Переподключаем визуализацию к новому микрофону
-                    const source = audioContext.createMediaStreamSource(
-                        localStream,
-                    );
-                    source.connect(localAnalyser);
+                // [FIX RC-3] Пока просили микрофон, звонок могли сбросить
+                if (callState !== "CONNECTED" || !pc) {
+                    newStream.getTracks().forEach((t) => t.stop());
+                    return;
                 }
-                console.log("[Audio] Микрофон успешно переключен на лету!");
+
+                const newTrack = newStream.getAudioTracks()[0];
+                const sender = pc.getSenders().find((s) =>
+                    s.track?.kind === "audio"
+                );
+
+                if (sender) {
+                    await sender.replaceTrack(newTrack);
+
+                    localStream.getTracks().forEach((t) => t.stop()); // гасим старый микрофон
+                    localStream = newStream;
+
+                    if (audioContext && audioContext.state !== "closed") {
+                        const source = audioContext.createMediaStreamSource(
+                            localStream,
+                        );
+                        source.connect(localAnalyser);
+                    }
+                    console.log("[Audio] Микрофон успешно переключен на лету!");
+                }
+            } catch (e) {
+                console.error("[Audio] Ошибка при смене аудиоустройства:", e);
             }
-        } catch (e) {
-            console.error("[Audio] Ошибка при смене аудиоустройства:", e);
         }
-    }
-});
-// --- ИСПРАВЛЕНИЕ: Восстановление графики при выходе из фона ---
-document.addEventListener("visibilitychange", () => {
-    // Когда пользователь возвращается в приложение, если был звонок — заставляем DOM перерисоваться
-    if (!document.hidden) {
-        if (currentUIState === "CONTENT") {
-            logo.className = "logo-side";
-            contentArea.classList.add("content-visible");
-        }
-    }
-});
+    });
+}
+
 // Отображение CACHE_NAME в футере
 (function initCacheDisplay() {
     const label = document.getElementById("cache-label");

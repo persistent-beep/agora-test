@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v58";
+const CACHE_NAME = "agora-hub-v59"; // [v59] glare + call_id + busy + tab-close — версия поднята, клиенты заберут новый script1.js
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,14 +10,20 @@ const ASSETS = [
 const API_URL = "https://agora-service.onrender.com";
 
 // 1. При установке кэшируем основные файлы (App Shell)
+// [FIX] Раньше стоял cache.addAll(ASSETS) — он АТОМАРНЫЙ: если хоть один
+// файл отдавался 404/500 (например, забыли залить logo.png), весь install
+// падал, новый Service Worker никогда не активировался и приложение
+// навсегда оставалось на старой версии. Кэшируем каждый файл отдельно:
+// один битый файл больше не блокирует обновление.
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
-    }),
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.allSettled(ASSETS.map((url) => cache.add(url)))
+    ),
   );
   self.skipWaiting();
 });
+
 // 2. реакция на запрос
 self.addEventListener("message", (event) => {
   if (event.data === "GET_CACHE_NAME") {
@@ -28,6 +34,7 @@ self.addEventListener("message", (event) => {
     });
   }
 });
+
 // Удаление старых кешей
 self.addEventListener("activate", (event) => {
   const cacheWhitelist = [CACHE_NAME];
@@ -69,105 +76,6 @@ self.addEventListener("fetch", (event) => {
 });
 
 // Ловим Push от сервера
-//self.addEventListener("push", function (event) {
-//  if (!event.data) return;
-//
-//  const payload = event.data.json();
-//
-//  if (payload.type === "INCOMING_CALL") {
-//    const options = {
-//      body: payload.body,
-//      icon: "./icons/icon-192.png",
-//      badge: "./icons/icon-192.png",
-//      vibrate: [200, 100, 200, 100, 200, 100, 200],
-//      requireInteraction: true,
-//      silent: false,
-//      sound: "default",
-//      data: { caller: payload.caller, target: payload.target },
-//      actions: [
-//        { action: "answer", title: "🟢 Принять" },
-//        { action: "decline", title: "🔴 Отклонить" },
-//      ],
-//    };
-//
-//    event.waitUntil(
-//      self.registration.showNotification(payload.title, options),
-//    );
-//  }
-//});
-//
-//self.addEventListener("notificationclick", function (event) {
-//  event.notification.close();
-//
-//  const action = event.action;
-//  const payloadData = event.notification.data || {};
-//  const caller = payloadData.caller || "unknown";
-//  const target = payloadData.target || "unknown";
-//  const targetUrl = self.registration.scope + "?call=" +
-//    encodeURIComponent(caller);
-//
-//  console.log("[SW] notificationclick:", { action, caller, target });
-//
-//  event.waitUntil(
-//    (async () => {
-//      // 🔴 Отклонить
-//      if (action === "decline") {
-//        const clients = await self.clients.matchAll({
-//          type: "window",
-//          includeUncontrolled: true,
-//        });
-//        let notified = false;
-//
-//        for (const client of clients) {
-//          if (client.url.includes(self.registration.scope)) {
-//            client.postMessage({ type: "CALL_DECLINED", caller });
-//            notified = true;
-//            break;
-//          }
-//        }
-//        if (!notified) {
-//          try {
-//            await fetch(`${API_URL}/call/decline`, {
-//              method: "POST",
-//              headers: { "Content-Type": "application/json" },
-//              body: JSON.stringify({ caller, target }),
-//            });
-//          } catch (err) {
-//            console.error("[SW] Ошибка отправки decline:", err);
-//          }
-//        }
-//        return;
-//      }
-//
-//      // 🟢 Принять (кнопка или тело уведомления)
-//      if (action === "answer" || action === "" || action === undefined) {
-//        const clientsList = await self.clients.matchAll({
-//          type: "window",
-//          includeUncontrolled: true,
-//        });
-//
-//        for (const client of clientsList) {
-//          if (
-//            client.url.includes(self.registration.scope) && "focus" in client
-//          ) {
-//            client.focus();
-//            client.postMessage({
-//              type: "WAKE_UP_CALL",
-//              caller: caller,
-//            });
-//            return;
-//          }
-//        }
-//
-//        // Окно не найдено → открываем новое
-//        if (typeof self.clients.openWindow === "function") {
-//          return self.clients.openWindow(targetUrl);
-//        }
-//      }
-//    })().catch((err) => console.error("[SW] Ошибка notificationclick:", err)),
-//  );
-//});
-// Ловим Push от сервера
 self.addEventListener("push", function (event) {
   if (!event.data) return;
 
@@ -181,8 +89,6 @@ self.addEventListener("push", function (event) {
       vibrate: [200, 100, 200, 100, 200, 100, 200],
       requireInteraction: true, // Пуш не исчезнет сам
       silent: false,
-      sound: "default",
-      priority: 2,
       timestamp: Date.now(),
       data: { caller: payload.caller, target: payload.target },
       // Убрали кнопку "Принять". Оставляем только "Отклонить".
@@ -240,9 +146,6 @@ self.addEventListener("notificationclick", function (event) {
 
   // 🟢 2. Нажали НА ТЕЛО УВЕДОМЛЕНИЯ (action пустой) -> открываем/разворачиваем звонок
   if (!action) {
-    // Надежный способ склеить URL для Android
-    const urlObj = new URL(self.registration.scope);
-    urlObj.searchParams.set("call", caller);
     const targetUrl = self.registration.scope + "?call=" +
       encodeURIComponent(caller);
     event.waitUntil(
