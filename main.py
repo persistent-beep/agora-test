@@ -110,15 +110,19 @@ class CallRegistry:
                 self.user_calls.pop(call["callee"], None)
         return call
 
-    def cleanup_stale(self, ttl: float = 120.0):
+    def cleanup_stale(self, ttl: float = 120.0) -> list:
         """Убирает зависшие RINGING-звонки (звонили, никто не взял,
         call_end потерялся). ACTIVE не трогаем — их закрывает
-        WS-finally при разрыве."""
+        WS-finally при разрыве. Возвращает список (call_id, call),
+        чтобы вызывающий код мог погасить push-баннеры этих звонков."""
+        purged = []
         now = time.time()
         for call_id in list(self.calls.keys()):
             call = self.calls[call_id]
             if call["state"] == "RINGING" and now - call["ts"] > ttl:
                 self._purge(call_id)
+                purged.append((call_id, call))
+        return purged
 
     def call_of(self, user_id: str) -> tuple[str | None, dict | None]:
         """Звонок, в котором участвует юзер: (call_id, call) или (None, None)."""
@@ -150,15 +154,16 @@ class CallRegistry:
             call["state"] = "ACTIVE"
             call["ts"] = time.time()
 
-    def end_for_user(self, user_id: str) -> tuple[str, str] | None:
-        """Заканчивает звонок юзера. Возвращает (call_id, partner_id)
-        или None, если юзер не в звонке."""
+    def end_for_user(self, user_id: str) -> tuple[str, str, dict | None] | None:
+        """Заканчивает звонок юзера. Возвращает (call_id, partner_id, call)
+        или None, если юзер не в звонке. Словарь звонка нужен вызывающему
+        коду, чтобы понять: сбросили ДО ответа (RINGING) или ПОСЛЕ (ACTIVE)."""
         call_id, call = self.call_of(user_id)
         if not call:
             return None
         self._purge(call_id)
         partner = call["callee"] if call["caller"] == user_id else call["caller"]
-        return call_id, partner
+        return call_id, partner, call
 
 call_registry = CallRegistry()
 
@@ -214,6 +219,63 @@ async def _safe_send(ws: WebSocket, payload: dict) -> bool:
         return True
     except Exception:
         return False
+
+# [PUSH-ALWAYS] Отправка push юзеру по всем его подпискам.
+# True — хотя бы одна доставка прошла; False — подписок нет или все упали.
+async def _send_push_to_user(user_id: str, payload: dict, ttl: int = 45) -> bool:
+    try:
+        response = supabase.table("push_subs").select("sub_data").eq("user_id", user_id).execute()
+    except Exception as e:
+        print(f"[PUSH] Не удалось прочитать подписки {user_id}: {e}")
+        return False
+
+    if not response.data:
+        return False
+
+    headers = {
+        "Urgency": "high",
+        # Topic = collapse key: на Android push с тем же топиком заменяет
+        # предыдущий (звонок отменили — «Пропущенный» сменит «Входящий»)
+        "Topic": "incoming-calls",
+        "apns-priority": "10",
+        "apns-push-type": "alert",
+        "apns-expiration": "45"
+    }
+
+    sent_any = False
+    for row in response.data:
+        sub_data = row.get("sub_data") if isinstance(row, dict) else None
+        if not sub_data:
+            continue
+        try:
+            await asyncio.to_thread(
+                webpush,
+                subscription_info=sub_data,
+                data=json.dumps(payload),
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS,
+                ttl=ttl,
+                headers=headers,
+            )
+            sent_any = True
+        except WebPushException as e:
+            print(f"[PUSH] Ошибка отправки {user_id}: {e}")
+            # [FIX] Мёртвая подписка (410/404) — удаляем из БД,
+            # иначе она будет вечно висеть и валить отправку.
+            status = None
+            if getattr(e, "response", None) is not None:
+                status = getattr(e.response, "status_code", None)
+            if status in (404, 410):
+                try:
+                    dead_endpoint = (sub_data or {}).get("endpoint")
+                    if dead_endpoint:
+                        supabase.table("push_subs") \
+                            .delete() \
+                            .eq("sub_data->>endpoint", dead_endpoint) \
+                            .execute()
+                except Exception as del_e:
+                    print(f"[PUSH] Не удалось удалить мёртвую подписку: {del_e}")
+    return sent_any
 
 # Эндпоинт для сохранения подписки от браузера
 @app.post("/push/subscribe")
@@ -278,8 +340,18 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
     msg_type = message.get("type")
 
     # Подчищаем зависшие RINGING-звонки при каждом сообщении
-    # (реестр крошечный, итерация бесплатна)
-    call_registry.cleanup_stale()
+    # (реестр крошечный, итерация бесплатна).
+    # [PUSH-CANCEL] Заодно гасим push-баннеры этих звонков: requireInteraction
+    # держит «Входящий вызов» на экране, пока юзер не тапнет — а звонок мёртв.
+    for stale_id, stale_call in call_registry.cleanup_stale():
+        await _send_push_to_user(stale_call["callee"], {
+            "title": "Пропущенный вызов",
+            "body": f"{stale_call['caller']} — звонок отменён",
+            "caller": stale_call["caller"],
+            "target": stale_call["callee"],
+            "call_id": stale_id,
+            "type": "CALL_CANCELLED",
+        })
 
     if msg_type == "call_request":
         # [FIX] message["target"] при отсутствии поля кидал KeyError,
@@ -288,6 +360,40 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
         if not target or target == sender_id:
             return
 
+        # [RETRY] Сначала разбираемся с СОБСТВЕННЫМ старым звонком звонящего —
+        # ДО busy-проверки цели! Иначе повторный звонок тому же абоненту
+        # (retry после потерянного call_end) получал busy от СВОЕГО ЖЕ
+        # зависшего RINGING-звонка. Активный разговор не трогаем: случайный
+        # call_request посреди беседы не должен перезапускать живой звонок.
+        my_call_id, my_call = call_registry.call_of(sender_id)
+        if my_call and my_call["state"] == "ACTIVE":
+            # Звонящий уже разговаривает — это рассинхрон клиента,
+            # вежливо отказываем, разговор продолжает жить
+            await _safe_send(sender_ws, {"type": "busy"})
+            return
+        if my_call:
+            # RINGING-хвост: прибиваем, старого партнёра оповещаем
+            stale = call_registry.end_for_user(sender_id)
+            if stale:
+                stale_id, stale_partner, _stale_call = stale
+                stale_ws = user_manager.get_user_ws(stale_partner)
+                if stale_ws:
+                    await _safe_send(stale_ws, {
+                        "type": "peer_disconnected",
+                        "call_id": stale_id,
+                    })
+                # Старый callee не ответил — у него висит баннер, гасим
+                # (новый INCOMING_CALL, если звонят снова ему же, просто
+                # заменит его тем же тегом)
+                await _send_push_to_user(stale_partner, {
+                    "title": "Пропущенный вызов",
+                    "body": f"{sender_id} — звонок отменён",
+                    "caller": sender_id,
+                    "target": stale_partner,
+                    "call_id": stale_id,
+                    "type": "CALL_CANCELLED",
+                })
+
         # [BUSY] Цель уже в звонке (RINGING или ACTIVE) — сразу отказ,
         # звонящий не висит 60 секунд в RINGING.
         _, target_call = call_registry.call_of(target)
@@ -295,18 +401,6 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
             print(f"[Call] {target} занят — отказ {sender_id}")
             await _safe_send(sender_ws, {"type": "busy"})
             return
-
-        # Сам звонящий завис в старом звонке (retry после таймаута и т.п.)
-        # — прибиваем старый, партнёра уведомляем.
-        stale = call_registry.end_for_user(sender_id)
-        if stale:
-            stale_id, stale_partner = stale
-            stale_ws = user_manager.get_user_ws(stale_partner)
-            if stale_ws:
-                await _safe_send(stale_ws, {
-                    "type": "peer_disconnected",
-                    "call_id": stale_id,
-                })
 
         # [CALL_ID] Регистрируем звонок ДО доставки: без записи в реестре
         # accept_call из push-холодного старта не нашёл бы, что активировать.
@@ -333,60 +427,30 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
                 "call_id": call_id,
                 "target": target,
             })
-        else:
-            # Здесь отправка push (звонок остаётся RINGING в реестре —
-            # TTL 120с или call_end его уберут)
-            print(f"[PUSH] {target} оффлайн. Ищем подписку в БД...")
-            response = supabase.table("push_subs").select("sub_data").eq("user_id", target).execute()
 
-            if response.data:
-                for row in response.data:
-                    sub_data = row["sub_data"]
-                    payload = json.dumps({
-                        "title": "Входящий вызов",
-                        "body": f"{sender_id} вызывает вас...",
-                        "caller": sender_id,
-                        "target": target,
-                        "type": "INCOMING_CALL"
-                    })
-                    headers = {
-                        "Urgency":"high",
-                        "Topic":"incoming-calls",
-                        "apns-priority": "10",
-                        "apns-push-type": "alert",
-                        "apns-expiration": "45"
-                    }
-                    try:
-                        await asyncio.to_thread(webpush,
-                            subscription_info=sub_data,
-                            data=payload,
-                            vapid_private_key=VAPID_PRIVATE_KEY,
-                            vapid_claims=VAPID_CLAIMS,
-                            ttl=45,
-                            headers=headers
-                        )
-                        print(f"[PUSH] Уведомление отправлено {target}")
-                    except WebPushException as e:
-                        print(f"[PUSH] Ошибка отправки: {e}")
-                        # [FIX] Мёртвая подписка (410/404) — удаляем из БД,
-                        # иначе она будет вечно висеть и валить отправку.
-                        status = None
-                        if getattr(e, "response", None) is not None:
-                            status = getattr(e.response, "status_code", None)
-                        if status in (404, 410):
-                            try:
-                                dead_endpoint = (sub_data or {}).get("endpoint")
-                                if dead_endpoint:
-                                    supabase.table("push_subs") \
-                                        .delete() \
-                                        .eq("sub_data->>endpoint", dead_endpoint) \
-                                        .execute()
-                            except Exception as del_e:
-                                print(f"[PUSH] Не удалось удалить мёртвую подписку: {del_e}")
-            else:
-                # Абонент вообще недоступен — откатываем регистрацию звонка
-                call_registry._purge(call_id)
-                await _safe_send(sender_ws, {"type": "peer_disconnected"})
+        # [PUSH-ALWAYS] Раньше push уходил ТОЛЬКО если у цели не было сокета.
+        # Но на Android свёрнутое приложение замерзает (tab freezing):
+        # JS не выполняется, а TCP-сокет для сервера ЖИВ. Сервер считал
+        # юзера «онлайн», отправлял incoming_call в пустоту (send_json в
+        # замороженную вкладку не падает!) и не слал push. Теперь push
+        # уходит ВСЕГДА параллельно с WS-доставкой, а service worker на
+        # месте решает: страница видна — переслать WAKE_UP_CALL без
+        # уведомления, скрыта/замерзла — показать уведомление.
+        push_ok = await _send_push_to_user(target, {
+            "title": "Входящий вызов",
+            "body": f"{sender_id} вызывает вас...",
+            "caller": sender_id,
+            "target": target,
+            "call_id": call_id,
+            "type": "INCOMING_CALL",
+        })
+
+        if not delivered and not push_ok:
+            # Абонент вообще недоступен (ни сокета, ни подписки) —
+            # откатываем регистрацию звонка
+            print(f"[Call] {target} недоступен: нет ни WS, ни push-подписки")
+            call_registry._purge(call_id)
+            await _safe_send(sender_ws, {"type": "peer_disconnected"})
 
     elif msg_type == "accept_call":
         target = message.get("target")
@@ -444,12 +508,29 @@ async def handle_signal_message(sender_id: str, message: dict, sender_ws: WebSoc
         # доверять ему нельзя.
         ended = call_registry.end_for_user(sender_id)
         if ended:
-            call_id, partner = ended
+            call_id, partner, ended_call = ended
             partner_ws = user_manager.get_user_ws(partner)
             if partner_ws:
                 await _safe_send(partner_ws, {
                     "type": "peer_disconnected",
                     "call_id": call_id,
+                })
+            # [PUSH-CANCEL] Звонящий повесил трубку ДО ответа: у callee на
+            # телефоне висит requireInteraction-баннер «Входящий вызов»,
+            # который сам не исчезнет. Тихий push CALL_CANCELLED заставит
+            # service worker погасить его и показать «Пропущенный вызов».
+            if (
+                ended_call and
+                ended_call["state"] == "RINGING" and
+                ended_call["caller"] == sender_id
+            ):
+                await _send_push_to_user(partner, {
+                    "title": "Пропущенный вызов",
+                    "body": f"{sender_id} отменил звонок",
+                    "caller": sender_id,
+                    "target": partner,
+                    "call_id": call_id,
+                    "type": "CALL_CANCELLED",
                 })
         # Если записи нет (рестарт) — сознательно НИЧЕГО не делаем:
         # слепой релей по target мог бы убить ДЕЙСТВУЮЩИЙ звонок
@@ -563,7 +644,7 @@ async def websocket_call(websocket: WebSocket, token: str = Query("guest")):
         # звонил в пустоту до собственного таймаута.
         ended = call_registry.end_for_user(user_id)
         if ended:
-            call_id, partner = ended
+            call_id, partner, _ended_call = ended
             print(f"[WS] {user_id} оборвал соединение посреди звонка — оповещаем {partner}")
             partner_ws = user_manager.get_user_ws(partner)
             if partner_ws:

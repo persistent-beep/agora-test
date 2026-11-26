@@ -1471,6 +1471,9 @@ window.addEventListener("load", () => {
             // жить (поток-сирота).
             if (callState === "IDLE") {
                 callSeq++;
+                // [PUSH-ALWAYS] SW пересылает серверный call_id — принимаем
+                // его, чтобы фильтр хвостов isStaleCallMsg работал и тут
+                if (event.data.call_id) activeCallId = event.data.call_id;
                 initCallInterface(caller);
                 callState = "RINGING_IN";
                 updateCallUI(

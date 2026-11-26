@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v59"; // [v59] glare + call_id + busy + tab-close — версия поднята, клиенты заберут новый script1.js
+const CACHE_NAME = "agora-hub-v60"; // [v60] PUSH-ALWAYS: push уходит при любом звонке, SW решает — уведомление или пересылка странице; + CALL_CANCELLED гасит баннер
 const ASSETS = [
   "./",
   "./index.html",
@@ -79,27 +79,114 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", function (event) {
   if (!event.data) return;
 
-  const payload = event.data.json();
+  let payload;
+  try {
+    payload = event.data.json();
+  } catch (e) {
+    return;
+  }
 
+  // [PUSH-ALWAYS] Свои окна + признак «хотя бы одно открыто на экране»
+  async function ownClients() {
+    const all = await self.clients.matchAll({
+      type: "window",
+      includeUncontrolled: true,
+    });
+    return all.filter((c) => c.url.includes(self.registration.scope));
+  }
+
+  function hasVisible(clients) {
+    return clients.some((c) => c.visibilityState === "visible");
+  }
+
+  // [PUSH-ALWAYS] Входящий звонок: push теперь приходит ВСЕГДА (даже когда
+  // страница «онлайн» по WebSocket — на Android свёрнутая вкладка замерзает
+  // и WS-сообщение она не обрабатывает). Если приложение видно на экране —
+  // пересылаем событие странице (у неё уже висит UI звонка), уведомление
+  // НЕ показываем. Если свёрнуто/замерзло — показываем уведомление.
   if (payload.type === "INCOMING_CALL") {
-    const options = {
-      body: payload.body,
-      icon: "./icons/icon-192.png",
-      badge: "./icons/icon-192.png",
-      vibrate: [200, 100, 200, 100, 200, 100, 200],
-      requireInteraction: true, // Пуш не исчезнет сам
-      silent: false,
-      timestamp: Date.now(),
-      data: { caller: payload.caller, target: payload.target },
-      // Убрали кнопку "Принять". Оставляем только "Отклонить".
-      actions: [
-        { action: "decline", title: "🔴 Отклонить" },
-      ],
-    };
+    event.waitUntil((async function () {
+      const clients = await ownClients();
 
-    event.waitUntil(
-      self.registration.showNotification(payload.title, options),
-    );
+      if (hasVisible(clients)) {
+        clients.forEach((c) =>
+          c.postMessage({
+            type: "WAKE_UP_CALL",
+            caller: payload.caller,
+            call_id: payload.call_id,
+          })
+        );
+        // Браузер не требует уведомления, когда вкладка видна — тихо уходим
+        return;
+      }
+
+      await self.registration.showNotification(payload.title, {
+        body: payload.body,
+        icon: "./icons/icon-192.png",
+        badge: "./icons/icon-192.png",
+        vibrate: [200, 100, 200, 100, 200, 100, 200],
+        requireInteraction: true, // Пуш не исчезнет сам
+        silent: false,
+        timestamp: Date.now(),
+        tag: "incoming-call", // [PUSH-CANCEL] по этому тегу потом найдём баннер
+        data: {
+          caller: payload.caller,
+          target: payload.target,
+          call_id: payload.call_id,
+        },
+        // Убрали кнопку "Принять". Оставляем только "Отклонить".
+        actions: [
+          { action: "decline", title: "🔴 Отклонить" },
+        ],
+      });
+    })());
+    return;
+  }
+
+  // [PUSH-CANCEL] Звонок отменён до ответа (звонящий сбросил / истёк
+  // таймаут дозвона / серверный TTL). Гасим висящий баннер «Входящий вызов»
+  // и оставляем тихое «Пропущенный», как в мессенджерах.
+  if (payload.type === "CALL_CANCELLED") {
+    event.waitUntil((async function () {
+      const ringing = await self.registration.getNotifications({
+        tag: "incoming-call",
+      });
+      let hadBanner = false;
+      ringing.forEach(function (n) {
+        const d = n.data || {};
+        // Гасим только совпавший call_id (или старый баннер без ID) —
+        // так повторный звонок не убьёт баннер НОВОГО звонка
+        if (!payload.call_id || !d.call_id || d.call_id === payload.call_id) {
+          n.close();
+          hadBanner = true;
+        }
+      });
+
+      // Баннера не было (ответили/отклонили тапом). Если приложение открыто
+      // на экране — ничего не показываем: оно всё узнает по WebSocket.
+      if (!hadBanner) {
+        const clients = await ownClients();
+        if (hasVisible(clients)) return;
+      }
+
+      await self.registration.showNotification("Пропущенный вызов", {
+        body: payload.body || "Звонок отменён",
+        icon: "./icons/icon-192.png",
+        badge: "./icons/icon-192.png",
+        silent: true,
+        requireInteraction: false,
+        timestamp: Date.now(),
+        // Свой тег (не "incoming-call"!): не должен заменять баннер
+        // НОВОГО входящего звонка при быстрых перезвонах
+        tag: "missed-" + (payload.caller || "unknown"),
+        data: {
+          caller: payload.caller,
+          call_id: payload.call_id,
+          missed: true,
+        },
+      });
+    })());
+    return;
   }
 });
 
@@ -146,8 +233,11 @@ self.addEventListener("notificationclick", function (event) {
 
   // 🟢 2. Нажали НА ТЕЛО УВЕДОМЛЕНИЯ (action пустой) -> открываем/разворачиваем звонок
   if (!action) {
-    const targetUrl = self.registration.scope + "?call=" +
-      encodeURIComponent(caller);
+    // [PUSH-CANCEL] Клик по «Пропущенному вызову»: просто открываем
+    // приложение, НЕ разворачивая интерфейс мёртвого звонка.
+    const isMissed = !!payloadData.missed;
+    const targetUrl = self.registration.scope +
+      (isMissed ? "" : "?call=" + encodeURIComponent(caller));
     event.waitUntil(
       self.clients.matchAll({ type: "window", includeUncontrolled: true })
         .then(
@@ -160,7 +250,7 @@ self.addEventListener("notificationclick", function (event) {
                 "focus" in client
               ) {
                 return client.focus().then(function (focusedClient) {
-                  if (focusedClient) {
+                  if (focusedClient && !isMissed) {
                     focusedClient.postMessage({
                       type: "WAKE_UP_CALL",
                       caller: caller,
