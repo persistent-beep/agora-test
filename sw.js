@@ -1,4 +1,4 @@
-const CACHE_NAME = "agora-hub-v60"; // [v60] PUSH-ALWAYS: push уходит при любом звонке, SW решает — уведомление или пересылка странице; + CALL_CANCELLED гасит баннер
+const CACHE_NAME = "agora-hub-v61"; // [v61] Enter-логин + рингтон + unfreeze-хил сокета; ring.mp3 в кэше (нет файла — install переживёт)
 const ASSETS = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const ASSETS = [
   "./style1.css",
   "./logo.png",
   "./manifest.json",
+  "./ring.mp3", // [RING] рингтон входящего; файла может не быть — allSettled переживёт 404
 ];
 const API_URL = "https://agora-service.onrender.com";
 
@@ -119,6 +120,18 @@ self.addEventListener("push", function (event) {
         // Браузер не требует уведомления, когда вкладка видна — тихо уходим
         return;
       }
+
+      // [RING] Скрытая, но ЖИВАЯ вкладка (только свернули, десктоп,
+      // фон без заморозки): будим её тоже — она подхватит рингтон сама.
+      // Замёрзшая вкладка получит сообщение при оттаивании — guard'ы
+      // в странице не дадут задвоить состояние.
+      clients.forEach((c) =>
+        c.postMessage({
+          type: "WAKE_UP_CALL",
+          caller: payload.caller,
+          call_id: payload.call_id,
+        })
+      );
 
       await self.registration.showNotification(payload.title, {
         body: payload.body,

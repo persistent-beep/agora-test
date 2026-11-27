@@ -107,13 +107,16 @@
     </div>
 </template>
 <!-- шаблон интерфейса логин-->
+<!-- [FIX ENTER] div -> form: Enter на компьютерной клавиатуре и Go/Done
+     на андроид-клавиатуре теперь нажимают кнопку сами, без тапа по кнопке.
+     enterkeyhint="go" рисует на мобильных клавиатурах кнопку «Go» -->
 <template id="template-auth">
     <div class="auth-container">
         <div class="auth-header">AUTHORIZATION</div>
-        <div class="auth-form-group">
-            <input type="password" id="auth-token" placeholder="ENTER ACCESS TOKEN" oninput="updateAuthBtn()">
-            <button id="btn-auth-submit" class="btn-large btn-blue" onclick="handleAuthSubmit()">GUEST</button>
-        </div>
+        <form class="auth-form-group" onsubmit="handleAuthSubmit(); return false;">
+            <input type="password" id="auth-token" placeholder="ENTER ACCESS TOKEN" enterkeyhint="go" autocomplete="off" oninput="updateAuthBtn()">
+            <button id="btn-auth-submit" type="submit" class="btn-large btn-blue">GUEST</button>
+        </form>
     </div>
 </template>
 <!--logout interface-->

@@ -172,6 +172,10 @@ function handleLogoClick() {
     if (currentUIState === "HOME") {
         token ? toMenu() : renderAuthModule();
     } else if (currentUIState === "MENU" || currentUIState === "AUTH") {
+        // [RING-FIX] Входящий звонок звенел, а экран звонка потерялся
+        // (гонка пробуждения из фона) — лого из меню = отклонить звонок,
+        // иначе отклонить его из меню невозможно.
+        if (callState === "RINGING_IN") hangUp();
         toHome();
     } else if (currentUIState === "CONTENT") {
         if (callState !== "IDLE") hangUp();
@@ -755,6 +759,7 @@ async function answerCall() {
             "#aaa",
             true,
         );
+        stopRingtone(); // [RING] юзер нажал ANSWER — хватит звонить
         callState = "AWAITING_OFFER";
 
         await fetchIceServers();
@@ -785,6 +790,7 @@ async function answerCall() {
         pendingOfferSdp = null; // [FIX] не тащим битый оффер в следующую попытку
         updateCallUI("ANSWER", "btn-green", "ERROR", "#ff4a4a", false);
         callState = "RINGING_IN"; // Возврат в предыдущее состояние
+        startRingtone(); // [RING] ошибка ответа — снова звеним
     }
 }
 
@@ -825,6 +831,7 @@ function onCallConnected() {
     // [FIX RC-3] Если звонок уже сброшен (hangUp успел пройти мимо),
     // не "оживляем" его: не поднимаем callState и не запускаем таймер.
     if (callState !== "CONNECTING" && callState !== "RINGING_OUT") return;
+    stopRingtone(); // [RING] страховка (answerCall уже остановил)
     clearRingTimeout(); // [TIMEOUT] дозвонились — таймаут не нужен
     callState = "CONNECTED";
     updateCallUI("END CALL", "btn-red", "CONNECTED", "#4aff4a", false);
@@ -832,6 +839,8 @@ function onCallConnected() {
 }
 
 function hangUp() {
+    stopRingtone(); // [RING] звонок сброшен — гасим рингтон до любых проверок
+
     if (callState === "IDLE") return;
 
     // [FIX RC-3] Аннулируем все незавершённые async-цепочки этого звонка
@@ -855,8 +864,15 @@ function hangUp() {
                 call_id: activeCallId, // [CALL_ID] сервер валидирует по своему реестру
             }),
         );
+    } else if (currentCallTarget) {
+        // [FIX UNFREEZE] Сокет не открыт: страница только разморозилась,
+        // а сервер уже мог убить наш зомби-сокет по таймауту пинга.
+        // Откладываем call_end — отправим первым сообщением после
+        // реконнекта, иначе партнёр слушает гудки до серверного GC (~40с).
+        pendingCallEnd = { target: currentCallTarget, call_id: activeCallId };
+        console.warn("[Signal] Сокет не открыт — call_end уйдёт после реконнекта.");
     } else {
-        console.warn("[Signal] Не удалось отправить call_end — нет сети.");
+        console.warn("[Signal] Не удалось отправить call_end — нет цели.");
     }
 
     callState = "IDLE";
@@ -923,6 +939,20 @@ function connectSignaling(token) {
         if (signalingSocket !== socket) return; // уже не актуален
         console.log("[Signal] Connected as", token);
 
+        // [FIX UNFREEZE] call_end, не ушедший из-за мёртвого сокета
+        // (hangUp во время разрыва) — доставляем первым же сообщением
+        if (pendingCallEnd) {
+            const pe = pendingCallEnd;
+            pendingCallEnd = null;
+            if (callState === "IDLE") {
+                socket.send(JSON.stringify({
+                    type: "call_end",
+                    target: pe.target,
+                    call_id: pe.call_id,
+                }));
+            }
+        }
+
         pingInterval = setInterval(() => {
             if (signalingSocket === socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({ type: "ping" }));
@@ -939,7 +969,14 @@ function connectSignaling(token) {
             console.warn("[Signal] Некорректный JSON:", e);
             return;
         }
-        if (msg.type === "pong") return;
+        if (msg.type === "pong") {
+            pongReceived = true; // [FIX UNFREEZE] ответ на liveness-пинг
+            if (livenessWatchdog) {
+                clearTimeout(livenessWatchdog);
+                livenessWatchdog = null;
+            }
+            return;
+        }
 
         // [FIX RC-2] Все сообщения обрабатываются строго последовательно
         signalingQueue = signalingQueue
@@ -1033,6 +1070,7 @@ async function handleSignalingMessage(msg) {
             activeCallId = msg.call_id || null; // [CALL_ID]
             initCallInterface(msg.from);
             callState = "RINGING_IN";
+            startRingtone(); // [RING] звоним, пока юзер не ответил
             fetchIceServers(); // Предзагрузка ICE в фоне
             updateCallUI(
                 "ANSWER",
@@ -1057,6 +1095,7 @@ async function handleSignalingMessage(msg) {
             // [BUSY] Абонент уже в звонке — сервер сказал сразу, не ждём 60с.
             if (callState !== "RINGING_OUT") return;
             console.log("[Call] Абонент занят");
+            stopRingtone(); // [RING] на случай рассинхрона — тишина
             callSeq++; // гасим незавершённые async-цепочки
             clearRingTimeout();
             callState = "IDLE";
@@ -1165,6 +1204,7 @@ async function handleSignalingMessage(msg) {
                 // Оффер пришел ДО того, как пользователь нажал ANSWER
                 initCallInterface(msg.from);
                 callState = "RINGING_IN";
+                startRingtone(); // [RING]
                 updateCallUI(
                     "ANSWER",
                     "btn-green",
@@ -1416,6 +1456,178 @@ function startWaveAnimation() {
     loop();
 }
 
+// ========== РИНГТОН ВХОДЯЩЕГО ЗВОНКА ==========
+// Почему так: Web Push API НЕ позволяет прикрепить звук к баннеру —
+// на Android звук уведомления определяет системный канал уведомлений
+// сайта (включается в настройках Android один раз). Поэтому, пока
+// страница жива, звоним сами:
+//   - ring.mp3 в корне сайта (нет файла — синтезируем гудок 425Гц);
+//   - луп-аудио делает вкладку «звучащей» → Chrome не замораживает её;
+//   - вибрация на Android;
+//   - если автоплей запрещён (холодный старт из push) — начнём звонить
+//     с первым касанием экрана (bindRingRetry).
+let ringStopFn = null;
+let ringActive = false;
+let ringRetryBound = false;
+
+// [FIX UNFREEZE] состояние проверки живости сокета после фона
+let pendingCallEnd = null; // call_end, не ушедший из-за мёртвого сокета
+let pongReceived = false;
+let livenessWatchdog = null;
+
+const RING_VIBRATE = [
+    600, 400, 600, 400, 600, 400, 600, 400,
+    600, 400, 600, 400, 600, 400, 600, 400,
+];
+
+function startRingtone() {
+    if (ringActive || ringStopFn) return; // уже звоним
+    ringActive = true;
+
+    try {
+        if (navigator.vibrate) navigator.vibrate(RING_VIBRATE);
+    } catch (e) { /* вибрация не критична */ }
+
+    // 1) Свой рингтон: положите ring.mp3 в корень сайта
+    let el = null;
+    try {
+        el = new Audio("ring.mp3");
+        el.loop = true;
+    } catch (e) { /* древний браузер — сразу синтез */ }
+
+    if (el) {
+        let p = null;
+        try {
+            p = el.play();
+        } catch (e) { /* синхронный запрет — в catch ниже */ }
+
+        if (p && typeof p.then === "function") {
+            p.then(() => {
+                ringStopFn = () => {
+                    try { el.pause(); } catch (e) {}
+                    ringStopFn = null;
+                };
+            }).catch(() => {
+                // нет файла ИЛИ автоплей запрещён — синтез
+                ringActive = false;
+                startSynthRing();
+            });
+        } else {
+            ringActive = false;
+            startSynthRing();
+        }
+    } else {
+        ringActive = false;
+        startSynthRing();
+    }
+}
+
+function startSynthRing() {
+    let ctx = null;
+    try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {}
+
+    const begin = () => {
+        if (!ctx || ctx.state !== "running") {
+            // Автоплей запрещён (страница только из push) — ждём жеста
+            try { if (ctx) ctx.close(); } catch (e) {}
+            ringActive = false;
+            bindRingRetry();
+            return;
+        }
+        try {
+            // Расписание гудков на 2 минуты вперёд: WebAudio-таймлайн
+            // живёт на аудиопотоке и не зависит от троттлинга таймеров
+            const t0 = ctx.currentTime + 0.05;
+            for (let i = 0; i < 50; i++) {
+                const s = t0 + i * 2.4;
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = "sine";
+                osc.frequency.value = 425; // RU-стандарт звонка
+                gain.gain.setValueAtTime(0.0001, s);
+                gain.gain.exponentialRampToValueAtTime(0.4, s + 0.05);
+                gain.gain.setValueAtTime(0.4, s + 0.8);
+                gain.gain.exponentialRampToValueAtTime(0.0001, s + 0.9);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start(s);
+                osc.stop(s + 1.0);
+            }
+            ringStopFn = () => {
+                try { ctx.close(); } catch (e) {}
+                ringStopFn = null;
+            };
+        } catch (e) {
+            ringActive = false;
+            bindRingRetry();
+        }
+    };
+
+    let resume = null;
+    try {
+        resume = ctx && ctx.resume();
+    } catch (e) {}
+    if (resume && typeof resume.then === "function") {
+        resume.then(begin).catch(begin);
+    } else {
+        begin();
+    }
+}
+
+function bindRingRetry() {
+    if (ringRetryBound || ringStopFn) return;
+    try {
+        if (typeof document === "undefined" || !document.addEventListener) {
+            return;
+        }
+    } catch (e) { return; }
+    ringRetryBound = true;
+    const retry = () => {
+        ringRetryBound = false;
+        document.removeEventListener("pointerdown", retry);
+        if (callState === "RINGING_IN") startRingtone();
+    };
+    document.addEventListener("pointerdown", retry);
+}
+
+function stopRingtone() {
+    ringActive = false;
+    try {
+        if (navigator.vibrate) navigator.vibrate(0);
+    } catch (e) {}
+    if (ringStopFn) {
+        const fn = ringStopFn;
+        ringStopFn = null;
+        fn();
+    }
+}
+
+// [FIX UNFREEZE] Проверка «жив ли сокет» при возврате из фона
+function checkSocketLiveness() {
+    if (!signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) {
+        return; // закрыт/переподключается — штатный путь разберётся
+    }
+    pongReceived = false;
+    try {
+        signalingSocket.send(JSON.stringify({ type: "ping" }));
+    } catch (e) {
+        return;
+    }
+    if (livenessWatchdog) clearTimeout(livenessWatchdog);
+    livenessWatchdog = setTimeout(() => {
+        livenessWatchdog = null;
+        if (
+            !pongReceived && signalingSocket &&
+            signalingSocket.readyState === WebSocket.OPEN
+        ) {
+            console.warn("[Signal] Сокет не отвечает после сна — пересобираем.");
+            signalingSocket.close(); // onclose → реконнект через 3с
+        }
+    }, 3500);
+}
+
 // ========== ИНИЦИАЛИЗАЦИЯ ==========
 
 window.addEventListener("resize", debounce(updateCanvasDimensions, 100));
@@ -1476,6 +1688,7 @@ window.addEventListener("load", () => {
                 if (event.data.call_id) activeCallId = event.data.call_id;
                 initCallInterface(caller);
                 callState = "RINGING_IN";
+                startRingtone(); // [RING]
                 updateCallUI(
                     "ANSWER",
                     "btn-green",
@@ -1512,16 +1725,25 @@ window.addEventListener("load", () => {
         callSeq++;
         initCallInterface(callerFromPush);
         callState = "RINGING_IN";
+        startRingtone(); // [RING]
         updateCallUI("ANSWER", "btn-green", "INCOMING CALL", "#ff9900", false);
     }
 });
 
 // [FIX] Два одинаковых обработчика visibilitychange объединены в один.
 document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && currentUIState === "CONTENT") {
+    if (document.hidden) return;
+
+    if (currentUIState === "CONTENT") {
         logo.className = "logo-side";
         contentArea.classList.add("content-visible");
     }
+
+    // [FIX UNFREEZE] Вкладка проснулась из фона. Сокет мог умереть, пока
+    // мы спали (Android замораживает JS, сервер убивает зомби по таймауту
+    // пинга), а readyState об этом ещё не знает. Пингуем: нет pong за
+    // 3.5с — считаем сокет мёртвым и пересобираем подключение штатно.
+    checkSocketLiveness();
 });
 
 // ========== АВТО-ВОССТАНОВЛЕНИЕ АУДИО (Смена наушников / устройств) ==========
